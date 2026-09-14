@@ -149,7 +149,7 @@ QUALITY = {
     "max":  dict(scale=1.40, crf=16, preset="slow",     force_sw=True),
 }
 
-DEFAULT_MIN_CUT = 2.0         # 短於此秒數就不剪，避免無意義的跳接
+DEFAULT_MIN_CUT = 2.5         # 短於此秒數就不剪，避免無意義的跳接
 
 
 # ─────────────────────────────────────────── 比分推導（唯一權威版本）
@@ -700,8 +700,8 @@ def plan(doc, opt):
     """從標記 JSON 算出剪接計畫。不碰 ffmpeg，介面即時預覽也用這個。"""
     events = sorted(doc.get("events", []), key=lambda e: e["t"])
     pads = doc.get("pads", {}) or {}
-    lead = opt.get("lead") if opt.get("lead") is not None else pads.get("lead", 1.4)
-    tail = opt.get("tail") if opt.get("tail") is not None else pads.get("tail", 1.0)
+    lead = opt.get("lead") if opt.get("lead") is not None else pads.get("lead", 0.8)
+    tail = opt.get("tail") if opt.get("tail") is not None else pads.get("tail", 2.0)
     min_cut = opt.get("min_cut", DEFAULT_MIN_CUT)
     cut_lets = bool(opt.get("cut_lets", False))
     let_tail = opt.get("let_tail", 1.5)
@@ -1276,9 +1276,9 @@ HTML = r"""<meta charset="utf-8">
       <div class="row"><span>剪去長度</span><b class="save" id="cutT">0.0s</b></div>
       <div class="row"><span>成片長度</span><b id="outT">0.0s</b></div>
       <div class="pads">
-        <div class="ctl">得分後留<input type="number" id="tailPad" value="1.0" step="0.1" min="0">s</div>
-        <div class="ctl">發球前留<input type="number" id="leadPad" value="0.3" step="0.1" min="0">s</div>
-        <div class="ctl">最短剪點<input type="number" id="minCut" value="2.0" step="0.1" min="0">s</div>
+        <div class="ctl">得分後留<input type="number" id="tailPad" value="2.0" step="0.1" min="0">s</div>
+        <div class="ctl">發球前留<input type="number" id="leadPad" value="0.8" step="0.1" min="0">s</div>
+        <div class="ctl">最短剪點<input type="number" id="minCut" value="2.5" step="0.1" min="0">s</div>
       </div>
     </div>
 
