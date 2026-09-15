@@ -18,7 +18,7 @@ from array import array
 from dataclasses import dataclass
 
 
-METHOD = "roi-motion-audio-aux-v0.2"
+METHOD = "roi-motion-audio-aux-v0.2.1"
 
 
 @dataclass(frozen=True)
@@ -33,9 +33,20 @@ class DetectorConfig:
     activity_percentile: float = 0.88
     threshold_fraction: float = 0.34
     min_threshold: float = 1.0
-    max_inactive_gap_seconds: float = 1.30
+    # Keep a second, lower visual threshold. A candidate still needs at least
+    # one frame over the main threshold; audio may only promote the remaining
+    # near-threshold visual frames, never create a range by itself.
+    support_threshold_fraction: float = 0.40
+    min_support_delta: float = 0.45
+    auxiliary_audio_hits: int = 3
+    max_inactive_gap_seconds: float = 0.75
     min_visual_seconds: float = 1.25
     min_active_frames: int = 3
+    # Short, mostly one-sided movements with almost no matching impacts are
+    # usually a player walking/resetting rather than a rally in the target clip.
+    brief_visual_seconds: float = 2.75
+    brief_min_side_balance: float = 0.18
+    brief_min_audio_hits: int = 3
     pre_roll_seconds: float = 0.70
     post_roll_seconds: float = 0.45
     audio_sample_rate: int = 8000
@@ -218,33 +229,54 @@ def _smooth(values):
     return result
 
 
-def _split_on_audio_gap(group, metrics, audio_impacts):
-    """Use a clear sound gap only to split an already visual candidate.
+def _trim_on_audio_gap(group, metrics, audio_impacts):
+    """Trim a much shorter visual prelude/tail around a clear audio gap.
 
-    Audio cannot seed a range here. Both resulting ranges must retain at least
-    two visually-active frames or the split is ignored.
+    This never returns two candidates. The audio hits must cover both ends of
+    the visual group, and visual duration—not sound count—chooses which side to
+    retain. Thus hall noise cannot seed a candidate or duplicate one.
     """
-    if len(group) < 4:
-        return [(group, "motion")]
+    if len(group) < 6:
+        return group, "motion"
     visual_start, visual_end = metrics[group[0]]["t"], metrics[group[-1]]["t"]
-    if visual_end - visual_start < 2.5:
-        return [(group, "motion")]
     hits = [t for t in audio_impacts if visual_start - .25 <= t <= visual_end + .25]
+    if len(hits) < 4:
+        return group, "motion"
+    if hits[0] - visual_start > 1.0 or visual_end - hits[-1] > 1.0:
+        return group, "motion"
     choices = []
     for before, after in zip(hits, hits[1:]):
         gap = after - before
+        if not 1.05 <= gap <= 2.2:
+            continue
         midpoint = (before + after) / 2
-        left_hits = sum(t <= before for t in hits)
-        right_hits = sum(t >= after for t in hits)
-        if 1.05 <= gap <= 2.2 and left_hits >= 2 and right_hits >= 2:
-            left = [index for index in group if metrics[index]["t"] < midpoint]
-            right = [index for index in group if metrics[index]["t"] >= midpoint]
-            if len(left) >= 2 and len(right) >= 2:
-                choices.append((gap, left, right))
+        left = [index for index in group if metrics[index]["t"] < midpoint]
+        right = [index for index in group if metrics[index]["t"] >= midpoint]
+        if len(left) >= 3 and len(right) >= 3:
+            choices.append((gap, left, right))
     if not choices:
-        return [(group, "motion")]
+        return group, "motion"
     _, left, right = max(choices, key=lambda item: item[0])
-    return [(left, "motion+audio-gap"), (right, "motion+audio-gap")]
+    original = group
+    if len(left) >= len(right) * 1.5:
+        kept, basis = left, "motion+audio-trim-tail"
+    elif len(right) >= len(left) * 1.5:
+        kept, basis = right, "motion+audio-trim-head"
+    else:
+        return original, "motion"
+
+    def balance(indices):
+        window = metrics[indices[0]:indices[-1] + 1]
+        left_mean = sum(item["left"] for item in window) / len(window)
+        right_mean = sum(item["right"] for item in window) / len(window)
+        return min(left_mean, right_mean) / max(0.001, max(left_mean, right_mean))
+
+    # A trim must not throw away the second player's visual evidence. This is
+    # what protects a real longer rally whose impact rhythm happens to contain
+    # a hall-noise gap.
+    if balance(kept) < max(0.12, balance(original) * 0.75):
+        return original, "motion"
+    return kept, basis
 
 
 def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
@@ -258,23 +290,33 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
     smoothed = _smooth(raw)
     baseline = percentile(smoothed, config.baseline_percentile)
     activity = percentile(smoothed, config.activity_percentile)
-    threshold = baseline + max(config.min_threshold,
-                               (activity - baseline) * config.threshold_fraction)
-    active = [i for i, score in enumerate(smoothed) if score >= threshold]
+    threshold_delta = max(config.min_threshold,
+                          (activity - baseline) * config.threshold_fraction)
+    threshold = baseline + threshold_delta
+    support_threshold = baseline + max(
+        config.min_support_delta,
+        threshold_delta * config.support_threshold_fraction,
+    )
+    strong_active = [i for i, score in enumerate(smoothed) if score >= threshold]
+    strong_set = set(strong_active)
+    support_active = [i for i, score in enumerate(smoothed)
+                      if score >= support_threshold]
     max_gap_frames = max(1, round(config.max_inactive_gap_seconds * config.sample_fps))
     groups = []
-    for index in active:
+    for index in support_active:
         if not groups or index - groups[-1][-1] > max_gap_frames:
             groups.append([index])
         else:
             groups[-1].append(index)
 
-    split_groups = []
-    for group in groups:
-        split_groups.extend(_split_on_audio_gap(group, metrics, audio_impacts))
-
+    trimmed_groups = [_trim_on_audio_gap(group, metrics, audio_impacts)
+                      for group in groups]
     candidates = []
-    for group, boundary_basis in split_groups:
+    promoted = rejected_brief = 0
+    trimmed = 0
+    for group, boundary_basis in trimmed_groups:
+        if boundary_basis != "motion":
+            trimmed += 1
         first, last = group[0], group[-1]
         visual_span = metrics[last]["t"] - metrics[first]["t"] + 1 / config.sample_fps
         if len(group) < config.min_active_frames or visual_span < config.min_visual_seconds:
@@ -291,6 +333,19 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
         stop_limit = duration if duration is not None else metrics[-1]["t"] + 1 / config.sample_fps
         end = min(stop_limit, metrics[last]["t"] + config.post_roll_seconds)
         hits = [t for t in audio_impacts if start <= t <= end]
+        strong_frames = sum(index in strong_set for index in group)
+        if strong_frames < config.min_active_frames:
+            # Audio is only a corroborating vote: the group must already be a
+            # sustained visual range and contain a main-threshold visual seed.
+            if strong_frames < 1 or len(hits) < config.auxiliary_audio_hits:
+                continue
+            boundary_basis = "motion+audio-support"
+            promoted += 1
+        if (visual_span <= config.brief_visual_seconds
+                and side_balance < config.brief_min_side_balance
+                and len(hits) < config.brief_min_audio_hits):
+            rejected_brief += 1
+            continue
         motion_mean = sum(smoothed[i] for i in range(first, last + 1)) / (last - first + 1)
         motion_peak = max(smoothed[first:last + 1])
         active_ratio = len(group) / max(1, last - first + 1)
@@ -306,14 +361,18 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
             visualEnd=round(metrics[last]["t"], 3),
             motionMean=round(motion_mean, 2), motionPeak=round(motion_peak, 2),
             activeRatio=round(active_ratio, 2), sideBalance=round(side_balance, 2),
+            strongFrames=strong_frames, supportFrames=len(group),
             audioHits=len(hits), audioSupport=round(audio_support, 2),
             confidence=round(confidence, 2), boundaryBasis=boundary_basis,
         ))
     diagnostics = dict(
         motionBaseline=round(baseline, 2), motionActivity=round(activity, 2),
-        motionThreshold=round(threshold, 2), frames=len(metrics),
-        activeFrames=len(active), visualGroups=len(groups),
-        audioAssistedSplits=max(0, len(split_groups) - len(groups)),
+        motionThreshold=round(threshold, 2),
+        motionSupportThreshold=round(support_threshold, 2), frames=len(metrics),
+        activeFrames=len(strong_active), supportFrames=len(support_active),
+        visualGroups=len(groups), audioPromotedCandidates=promoted,
+        rejectedBriefCandidates=rejected_brief, audioTrimmedCandidates=trimmed,
+        audioAssistedSplits=0,
     )
     return candidates, diagnostics
 
@@ -342,7 +401,8 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
             sampleFps=config.sample_fps,
             analysisSize=[config.analysis_width, config.analysis_height],
             **motion_diagnostics, audio=audio_diagnostics,
-            note="候選由 ROI 視覺動態產生；音訊只參與既有候選的輔助分數。",
+            note=("候選由 ROI 視覺動態產生；音訊只能佐證接近門檻的視覺片段，"
+                  "或協助修剪很短的前後移動，不會建立或增加候選。"),
         ),
     )
 
@@ -368,14 +428,21 @@ def main(argv=None):
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    print(f"Rally Detection v0.2 · {result['source']}")
+    print(f"Rally Detection v0.2.1 · {result['source']}")
     print("候選由 ROI 影像產生；音訊只作輔助。人工確認前不會建立事件。\n")
     for i, item in enumerate(result["candidates"], 1):
         print(f"{i:3d}  {item['start']:8.2f} → {item['end']:8.2f}  "
               f"motion {item['motionMean']:5.2f}/{item['motionPeak']:5.2f}  "
               f"左右 {item['sideBalance']:.2f}  audio {item['audioHits']:2d}  "
-              f"score {item['confidence']:.0%}")
-    print(f"\n共 {len(result['candidates'])} 個視覺候選。")
+              f"frames {item['strongFrames']}/{item['supportFrames']}  "
+              f"{item['boundaryBasis']}  score {item['confidence']:.0%}")
+    diagnostics = result["diagnostics"]
+    print(f"\n共 {len(result['candidates'])} 個視覺候選。"
+          f" motion 閾值 {diagnostics['motionThreshold']}/"
+          f"{diagnostics['motionSupportThreshold']}（佐證）；"
+          f"佐證保留 {diagnostics['audioPromotedCandidates']}，"
+          f"前後修剪 {diagnostics['audioTrimmedCandidates']}，"
+          f"短走動排除 {diagnostics['rejectedBriefCandidates']}。")
 
 
 if __name__ == "__main__":

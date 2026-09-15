@@ -1300,7 +1300,7 @@ HTML = r"""<meta charset="utf-8">
     </div>
 
     <details class="rallybox" id="rallyBox">
-      <summary>回合候選 · ROI v0.2 <span id="rallyCount">—</span></summary>
+      <summary>回合候選 · ROI v0.2.1 <span id="rallyCount">—</span></summary>
       <div class="rallybody">
         <div class="rallyctl">
           <button class="btn" id="selectRoi" disabled>框選 ROI</button>
@@ -1574,15 +1574,19 @@ HTML = r"""<meta charset="utf-8">
     events.splice(idx, 1); refresh();
   }
 
-  /* ───────────────────────── Rally Detection v0.2
-     ROI 影像才會產生候選；音訊只替既有候選提供輔助分數。
+  /* ───────────────────────── Rally Detection v0.2.1
+     ROI 影像才會產生候選；音訊只佐證接近門檻的視覺片段。
      只有使用者按下「確認發球」才會寫入事件，得分者仍完全手動。 */
   function paintRallies() {
     $('rallyCount').textContent = rallyCandidates.length || '—';
     const d = rallyDiagnostics;
     $('rallyDiag').textContent = d && d.motionThreshold != null
-      ? `ROI motion 基線 ${d.motionBaseline} · 閾值 ${d.motionThreshold} · ` +
-        `${d.frames} frames · audio ${d.audio && d.audio.available ? d.audio.impacts + ' hits（輔助）' : '無'}`
+      ? `ROI ${roi ? [roi.x, roi.y, roi.w, roi.h].map(v => v.toFixed(3)).join(',') : '—'} · ` +
+        `motion 基線 ${d.motionBaseline} · 閾值 ${d.motionThreshold}` +
+        `${d.motionSupportThreshold != null ? '/' + d.motionSupportThreshold + '（佐證）' : ''} · ` +
+        `${d.frames} frames · audio ${d.audio && d.audio.available ? d.audio.impacts + ' hits（輔助）' : '無'} · ` +
+        `佐證保留 ${d.audioPromotedCandidates || 0} · 前後修剪 ${d.audioTrimmedCandidates || 0} · ` +
+        `短走動排除 ${d.rejectedBriefCandidates || 0}`
       : '';
     if (!rallyCandidates.length) { $('rallyList').innerHTML = ''; return; }
     $('rallyList').innerHTML = rallyCandidates.map((r, i) => {
@@ -1591,7 +1595,8 @@ HTML = r"""<meta charset="utf-8">
         <time>#${String(i + 1).padStart(2, '0')}</time>
         <span>${fmt(r.start)} → ${fmt(r.end)}
           <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
-          `audio ${r.audioHits} · ${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small></span>
+          `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
+          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small></span>
         <button class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
       </div>`;
     }).join('');
