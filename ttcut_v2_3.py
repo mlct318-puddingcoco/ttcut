@@ -1300,7 +1300,7 @@ HTML = r"""<meta charset="utf-8">
     </div>
 
     <details class="rallybox" id="rallyBox">
-      <summary>回合候選 · ROI v0.2.1 <span id="rallyCount">—</span></summary>
+      <summary>回合候選 · ROI v0.2.2 <span id="rallyCount">—</span></summary>
       <div class="rallybody">
         <div class="rallyctl">
           <button class="btn" id="selectRoi" disabled>框選 ROI</button>
@@ -1574,7 +1574,7 @@ HTML = r"""<meta charset="utf-8">
     events.splice(idx, 1); refresh();
   }
 
-  /* ───────────────────────── Rally Detection v0.2.1
+  /* ───────────────────────── Rally Detection v0.2.2
      ROI 影像才會產生候選；音訊只佐證接近門檻的視覺片段。
      只有使用者按下「確認發球」才會寫入事件，得分者仍完全手動。 */
   function paintRallies() {
@@ -1591,13 +1591,19 @@ HTML = r"""<meta charset="utf-8">
     if (!rallyCandidates.length) { $('rallyList').innerHTML = ''; return; }
     const splitReasons = {
       short_candidate: '候選太短', no_sustained_valley: '沒有持續低動作',
+      brief_valley: '低動作太短',
       edge_valley: '低動作在邊緣', short_side: '切後一側太短',
       shallow_valley: '動作下降不足', no_visual_restart: '後段未重新活動',
       weak_visual_before: '前段活動不足',
-      audio_continues_during_pause: '停頓仍有連續擊球聲',
+      low_split_confidence: '切分信心不足',
       fragment_guard: '避免切成碎片',
       split_limit: '單候選最多兩個切點',
       sustained_motion_valley_visual_restart: '持續低動作後重新活動'
+    };
+    const shortReasons = {
+      few_strong_frames: '強動作影格少', weak_visual_peak: '視覺峰值弱',
+      no_audio_support: '無輔助音訊', very_short: '時間很短',
+      incomplete_rise_fall: '起落動作不完整'
     };
     $('rallyList').innerHTML = rallyCandidates.map((r, i) => {
       const used = events.some(e => e.type === 'serve' && Math.abs(e.t - r.start) < .20);
@@ -1605,14 +1611,32 @@ HTML = r"""<meta charset="utf-8">
         `${r.motionValleyScore}/${r.motionValleyDuration}s`;
       const split = `切點 ${r.splitPoint == null ? '—' : fmt(r.splitPoint)} · ` +
         `valley ${valley} · 間隔 audio ${r.splitAudioHits || 0} · ` +
+        `切分信心 ${r.splitConfidence == null ? '—' : Math.round(r.splitConfidence * 100) + '%'} ` +
+        `(視覺 ${r.splitVisualConfidence == null ? '—' : Math.round(r.splitVisualConfidence * 100) + '%'}, ` +
+        `音訊扣 ${Math.round((r.splitAudioPenalty || 0) * 100)}%) · ` +
         `${r.splitDecision === 'split' ? '已切' : '未切'}：${splitReasons[r.splitReason] || r.splitReason || '—'}`;
+      const checks = (r.splitChecks || []).filter(v => v.point != null);
+      const se = r.shortEvidence || {};
+      const shortInfo = se.penalty > 0
+        ? `<small>短候選：基礎 ${Math.round(r.baseConfidence * 100)}% → ` +
+          `${Math.round(r.confidence * 100)}% · 起／落 ${se.rise}/${se.fall} · ` +
+          `${(se.penaltyReasons || []).map(v => shortReasons[v] || v).join('、')}</small>`
+        : '';
+      const allValleys = checks.length ? `<details><summary>檢查 ${checks.length} 個 valley</summary>` +
+        checks.map(v => `<small>${fmt(v.point)} · ${v.motionValleyScore}/${v.motionValleyDuration}s` +
+          ` · 深度 ${v.valleyDepth == null ? '—' : Math.round(v.valleyDepth * 100) + '%'}` +
+          ` · audio ${v.audioHits}（扣 ${Math.round((v.audioPenalty || 0) * 100)}%）` +
+          ` · 切分 ${v.splitConfidence == null ? '—' : Math.round(v.splitConfidence * 100) + '%'}` +
+          ` · ${v.decision === 'split' ? '已切' : '未切'}：${splitReasons[v.reason] || v.reason}</small>`).join('') +
+        `</details>` : '';
       return `<div class="rallyrow" data-rally="${i}" title="點一下從候選開頭預覽">
         <time>#${String(i + 1).padStart(2, '0')}</time>
         <span>${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
           <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
           `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
-          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small>` +
-          `<small>${split}</small></span>
+          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%` +
+          `${r.confidenceTier === 'low' ? ' · 低信心（仍可人工確認）' : ''}</small>` +
+          `<small>${split}</small>${shortInfo}${allValleys}</span>
         <button class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
       </div>`;
     }).join('');
@@ -1642,6 +1666,7 @@ HTML = r"""<meta charset="utf-8">
   });
 
   $('rallyList').addEventListener('click', e => {
+    if (e.target.closest('details')) return;
     const use = e.target.closest('[data-rally-serve]');
     const row = e.target.closest('[data-rally]');
     if (!row || !video) return;

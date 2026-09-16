@@ -54,6 +54,14 @@ class MotionTests(unittest.TestCase):
         self.assertGreater(candidates[0]["audioHits"], 0)
         self.assertGreater(diagnostics["motionThreshold"], diagnostics["motionBaseline"])
 
+    def test_candidate_duration_does_not_replace_video_duration(self):
+        candidates, _ = analyze_motion(
+            self._metrics([(16, 27), (48, 59)]), [], DetectorConfig())
+        self.assertEqual(len(candidates), 2)
+        self.assertTrue(all(candidate["end"] > candidate["start"]
+                            for candidate in candidates))
+        self.assertGreater(candidates[1]["start"], candidates[0]["end"])
+
     def test_audio_alone_never_creates_a_candidate(self):
         candidates, _ = analyze_motion(self._metrics([]), [2.0, 2.5, 3.0],
                                        DetectorConfig(), 20)
@@ -131,8 +139,12 @@ class MotionTests(unittest.TestCase):
                                                  DetectorConfig(), 80)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(diagnostics["motionValleySplits"], 0)
+        brief = [check for check in candidates[0]["splitChecks"]
+                 if check["reason"] == "brief_valley"]
+        self.assertTrue(brief)
+        self.assertIsNotNone(brief[0]["valleyDepth"])
 
-    def test_audio_vetoes_shallow_short_pause(self):
+    def test_audio_lowers_confidence_of_shallow_short_pause(self):
         config = DetectorConfig(min_threshold=5.0)
         metrics = self._joined_rallies([(35, 36)], valley_motion=4.0)
         candidates, diagnostics = analyze_motion(metrics, [17.6, 18.0],
@@ -140,7 +152,50 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertEqual(diagnostics["motionValleySplits"], 0)
         self.assertEqual(candidates[0]["splitReason"],
-                         "audio_continues_during_pause")
+                         "low_split_confidence")
+        check = next(check for check in candidates[0]["splitChecks"]
+                     if check["reason"] == "low_split_confidence")
+        self.assertGreater(check["audioPenalty"], 0)
+        self.assertLess(check["splitConfidence"], check["visualConfidence"])
+
+    def test_sustained_visual_valley_survives_background_audio(self):
+        config = DetectorConfig(min_threshold=5.0)
+        metrics = self._joined_rallies([(35, 37)], valley_motion=4.0)
+        candidates, diagnostics = analyze_motion(metrics, [17.6, 18.0],
+                                                 config, 80)
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(diagnostics["motionValleySplits"], 1)
+        check = next(check for check in candidates[0]["splitChecks"]
+                     if check["decision"] == "split")
+        self.assertGreater(check["audioPenalty"], 0)
+        self.assertGreaterEqual(check["splitConfidence"],
+                                config.split_confidence_threshold)
+
+    def test_time_order_considers_earlier_valleys_before_deeper_later_one(self):
+        metrics = self._metrics([(20, 80)])
+        for first, motion in ((30, 1.8), (47, 1.5), (64, 1.2)):
+            for item in metrics[first:first + 2]:
+                item.update(motion=motion, left=motion, right=motion * .8)
+        candidates, diagnostics = analyze_motion(metrics, [],
+                                                 DetectorConfig(), 80)
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual(diagnostics["motionValleySplits"], 2)
+        split_points = sorted({c["splitPoint"] for c in candidates})
+        self.assertLess(split_points[-1], 30.0)
+        self.assertTrue(any(check["reason"] == "split_limit"
+                            for check in candidates[0]["splitChecks"]))
+
+    def test_weak_short_candidate_is_retained_but_low_confidence(self):
+        metrics = self._metrics([])
+        for item in metrics[20:23]:
+            item.update(motion=6.0, left=6.0, right=1.2)
+        candidates, _ = analyze_motion(metrics, [10.2, 10.6, 11.0],
+                                       DetectorConfig(min_threshold=5.0), 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["confidenceTier"], "low")
+        self.assertGreater(candidates[0]["shortEvidence"]["penalty"], 0)
+        self.assertLess(candidates[0]["confidence"],
+                        candidates[0]["baseConfidence"])
 
     def test_no_visual_restart_does_not_split(self):
         config = DetectorConfig(min_threshold=5.0)
