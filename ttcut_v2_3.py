@@ -1148,9 +1148,17 @@ HTML = r"""<meta charset="utf-8">
   .rallyrow{display:grid;grid-template-columns:36px 1fr auto;gap:7px;align-items:center;
     padding:7px 14px;border-top:1px solid rgba(32,72,110,.5);cursor:pointer;font-size:11.5px}
   .rallyrow:hover{background:var(--table-2)}
-  .rallyrow time{font-family:var(--mono);color:var(--ink-dim)}
+  .rallyrow.low{border-left:3px solid var(--warn);padding-left:11px}
+  .rallyrow .rallyseek{border:0;background:none;color:var(--ink);padding:4px 0;
+    font:inherit;font-family:var(--mono);text-align:left;cursor:pointer}
+  .rallyrow .rallyseek:hover{text-decoration:underline}
+  .rallyrow .rallyseek:focus-visible{outline:2px solid var(--ball);outline-offset:2px}
+  .rallyrow .rallyinfo{min-width:0}
   .rallyrow small{display:block;color:var(--ink-dim);margin-top:2px;font-family:var(--mono)}
-  .rallyrow button{padding:4px 6px}
+  .rallyrow .confidence{display:inline-block;margin:4px 0 2px;padding:3px 7px;
+    border:1px solid var(--warn);border-radius:3px;background:rgba(255,194,77,.14);
+    color:var(--warn);font:700 13px var(--body);line-height:1.3}
+  .rallyrow [data-rally-serve]{padding:4px 6px}
 
   .cutout{border-top:1px solid var(--line-soft);padding:11px 14px;font-size:12px;
     color:var(--ink-dim);display:flex;flex-direction:column;gap:5px}
@@ -1300,7 +1308,7 @@ HTML = r"""<meta charset="utf-8">
     </div>
 
     <details class="rallybox" id="rallyBox">
-      <summary>回合候選 · ROI v0.2.2 <span id="rallyCount">—</span></summary>
+      <summary>回合候選 · ROI v0.2.3 <span id="rallyCount">—</span></summary>
       <div class="rallybody">
         <div class="rallyctl">
           <button class="btn" id="selectRoi" disabled>框選 ROI</button>
@@ -1365,7 +1373,7 @@ HTML = r"""<meta charset="utf-8">
   const $ = id => document.getElementById(id);
   const screenEl = $('screen'), emptyEl = $('empty');
 
-  let video = null, events = [], mediaTime = 0, srcName = '', srcPath = '';
+  let video = null, events = [], srcName = '', srcPath = '';
   let outPath = '', ffmpegOK = false, polling = null;
   let rallyCandidates = [], rallyDiagnostics = null, rallyBusy = false;
   let roi = null, roiSelecting = false, roiDrag = null;
@@ -1460,7 +1468,6 @@ HTML = r"""<meta charset="utf-8">
     video.addEventListener('seeked', tick);
     video.addEventListener('error', () => banner('影片無法播放，可能是瀏覽器不支援這個編碼。'));
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(updateRoiLayer).observe(video);
-    pumpFrames();
   }
 
   function updateRoiLayer() {
@@ -1525,16 +1532,11 @@ HTML = r"""<meta charset="utf-8">
     setRoiSelecting(false);
   });
 
-  function pumpFrames() {
-    if (!video || !video.requestVideoFrameCallback) return;
-    video.requestVideoFrameCallback((now, meta) => {
-      mediaTime = meta.mediaTime; tick(); pumpFrames();
-    });
-  }
   function now() {
     if (!video) return 0;
-    const t = (video.requestVideoFrameCallback && !video.seeking) ? mediaTime : video.currentTime;
-    return isFinite(t) ? t : video.currentTime;
+    // Paused seeks may not produce a video-frame callback. The media element
+    // time is authoritative for the clock, scrubber, and new manual marks.
+    return video.currentTime;
   }
   function tick() {
     if (!video) return;
@@ -1574,7 +1576,7 @@ HTML = r"""<meta charset="utf-8">
     events.splice(idx, 1); refresh();
   }
 
-  /* ───────────────────────── Rally Detection v0.2.2
+  /* ───────────────────────── Rally Detection v0.2.3
      ROI 影像才會產生候選；音訊只佐證接近門檻的視覺片段。
      只有使用者按下「確認發球」才會寫入事件，得分者仍完全手動。 */
   function paintRallies() {
@@ -1629,15 +1631,15 @@ HTML = r"""<meta charset="utf-8">
           ` · 切分 ${v.splitConfidence == null ? '—' : Math.round(v.splitConfidence * 100) + '%'}` +
           ` · ${v.decision === 'split' ? '已切' : '未切'}：${splitReasons[v.reason] || v.reason}</small>`).join('') +
         `</details>` : '';
-      return `<div class="rallyrow" data-rally="${i}" title="點一下從候選開頭預覽">
-        <time>#${String(i + 1).padStart(2, '0')}</time>
-        <span>${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
+      return `<div class="rallyrow${r.confidenceTier === 'low' ? ' low' : ''}" data-rally="${i}" title="點一下從候選開頭預覽">
+        <button type="button" class="rallyseek" data-rally-seek="${i}" aria-label="預覽候選 ${i + 1}，從 ${fmt(r.start)} 開始">#${String(i + 1).padStart(2, '0')}</button>
+        <div class="rallyinfo">${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
+          ${r.confidenceTier === 'low' ? `<strong class="confidence">低信心 · ${Math.round(r.confidence * 100)}% · 請人工確認</strong>` : ''}
           <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
           `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
-          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%` +
-          `${r.confidenceTier === 'low' ? ' · 低信心（仍可人工確認）' : ''}</small>` +
-          `<small>${split}</small>${shortInfo}${allValleys}</span>
-        <button class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
+          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small>` +
+          `<small>${split}</small>${shortInfo}${allValleys}</div>
+        <button type="button" class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
       </div>`;
     }).join('');
   }
@@ -1666,17 +1668,19 @@ HTML = r"""<meta charset="utf-8">
   });
 
   $('rallyList').addEventListener('click', e => {
-    if (e.target.closest('details')) return;
     const use = e.target.closest('[data-rally-serve]');
     const row = e.target.closest('[data-rally]');
     if (!row || !video) return;
     const candidate = rallyCandidates[+row.dataset.rally];
-    video.pause(); video.currentTime = candidate.start;
+    if (!candidate) return;
     if (use) {
       const t = Math.round(candidate.start * fps()) / fps();
       events.push({t, type: 'serve'}); events.sort((a,b) => a.t - b.t);
       paintRallies(); refresh();
+      return;
     }
+    if (e.target.closest('details')) return;
+    video.pause(); video.currentTime = candidate.start; tick();
   });
 
   /* ───────────────────────── 向 Python 要計分結果 */
@@ -1816,7 +1820,7 @@ HTML = r"""<meta charset="utf-8">
     const k = e.target.closest('[data-kill]');
     if (k) { events.splice(+k.dataset.kill, 1); refresh(); return; }
     const row = e.target.closest('.ev');
-    if (row && video) { video.pause(); video.currentTime = events[+row.dataset.i].t; }
+    if (row && video) { video.pause(); video.currentTime = events[+row.dataset.i].t; tick(); }
   });
 
   function paintAccent() {
@@ -1834,7 +1838,7 @@ HTML = r"""<meta charset="utf-8">
   /* ───────────────────────── 鍵盤 */
   addEventListener('keydown', e => {
     const el = document.activeElement;
-    if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return;
+    if (el && /^(INPUT|SELECT|TEXTAREA|BUTTON|SUMMARY)$/.test(el.tagName)) return;
     if (e.metaKey || e.ctrlKey) return;
     const step = e.altKey ? 5 : e.shiftKey ? 1 : 1 / fps();
     switch (e.key) {
