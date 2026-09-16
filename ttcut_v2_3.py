@@ -65,6 +65,12 @@ import subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 
+try:
+    from rally_detection import DetectionError, detect_video
+except ImportError:                         # 主程式仍可單獨使用；只停用實驗功能
+    DetectionError = RuntimeError
+    detect_video = None
+
 VERSION = "V2.3"
 
 IS_MAC = platform.system() == "Darwin"
@@ -1068,11 +1074,18 @@ HTML = r"""<meta charset="utf-8">
     max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
   .stage{display:flex;flex-direction:column;min-width:0;min-height:0;padding:14px 16px;gap:12px}
-  .screen{flex:1;min-height:0;background:#04121F;border:1px solid var(--line-soft);
-    border-radius:4px;display:flex;align-items:center;justify-content:center}
+  .screen{position:relative;flex:1;min-height:0;background:#04121F;border:1px solid var(--line-soft);
+    border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden}
   video{max-width:100%;max-height:100%;display:block}
   .empty{color:var(--ink-dim);text-align:center;padding:30px;line-height:1.8;max-width:430px}
   .empty b{color:var(--ink);font-weight:500}
+  .roilayer{position:absolute;display:none;border:1px dashed rgba(255,255,255,.42);
+    touch-action:none;z-index:2;pointer-events:none}
+  .roilayer.selecting{cursor:crosshair;background:rgba(255,122,24,.06);pointer-events:auto}
+  .roirect{position:absolute;border:2px solid var(--ball);background:rgba(255,122,24,.11);
+    box-shadow:0 0 0 9999px rgba(2,12,22,.28);pointer-events:none}
+  .roirect::before{content:'ROI';position:absolute;left:-2px;top:-22px;padding:2px 6px;
+    background:var(--ball);color:#04121F;font:10px var(--mono);font-weight:700}
 
   .transport{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
   .tc{font-family:var(--mono);font-size:20px;font-variant-numeric:tabular-nums}
@@ -1121,6 +1134,31 @@ HTML = r"""<meta charset="utf-8">
   .ev .kill{border:0;background:none;color:var(--ink-dim);cursor:pointer;padding:0 3px;font-size:15px}
   .ev .kill:hover{color:var(--ball)}
   .streamempty{padding:22px 14px;color:var(--ink-dim);font-size:12.5px;line-height:1.7}
+
+  .rallybox{border-bottom:1px solid var(--line-soft);background:rgba(8,32,58,.45)}
+  .rallybox summary{padding:9px 14px;cursor:pointer;color:var(--ink-dim);
+    font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+  .rallybox summary span{float:right;font-family:var(--mono);letter-spacing:0}
+  .rallybody{padding:0 14px 10px}
+  .rallyctl{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+  .rallyctl button{flex:1;min-width:92px}
+  .rallynote{font-size:10.5px;color:var(--ink-dim);line-height:1.45;margin-top:7px}
+  .rallydiag{font-family:var(--mono);font-size:9.5px;color:var(--ink-dim);margin-top:5px}
+  .rallylist{max-height:205px;overflow-y:auto;margin:8px -14px -10px}
+  .rallyrow{display:grid;grid-template-columns:36px 1fr auto;gap:7px;align-items:center;
+    padding:7px 14px;border-top:1px solid rgba(32,72,110,.5);cursor:pointer;font-size:11.5px}
+  .rallyrow:hover{background:var(--table-2)}
+  .rallyrow.low{border-left:3px solid var(--warn);padding-left:11px}
+  .rallyrow .rallyseek{border:0;background:none;color:var(--ink);padding:4px 0;
+    font:inherit;font-family:var(--mono);text-align:left;cursor:pointer}
+  .rallyrow .rallyseek:hover{text-decoration:underline}
+  .rallyrow .rallyseek:focus-visible{outline:2px solid var(--ball);outline-offset:2px}
+  .rallyrow .rallyinfo{min-width:0}
+  .rallyrow small{display:block;color:var(--ink-dim);margin-top:2px;font-family:var(--mono)}
+  .rallyrow .confidence{display:inline-block;margin:4px 0 2px;padding:3px 7px;
+    border:1px solid var(--warn);border-radius:3px;background:rgba(255,194,77,.14);
+    color:var(--warn);font:700 13px var(--body);line-height:1.3}
+  .rallyrow [data-rally-serve]{padding:4px 6px}
 
   .cutout{border-top:1px solid var(--line-soft);padding:11px 14px;font-size:12px;
     color:var(--ink-dim);display:flex;flex-direction:column;gap:5px}
@@ -1221,6 +1259,7 @@ HTML = r"""<meta charset="utf-8">
         按左上角 <b>載入影片</b> 選擇比賽影片。<br>
         影片直接從這台電腦讀取，不會上傳到任何地方。
       </div>
+      <div class="roilayer" id="roiLayer"><div class="roirect" id="roiRect" hidden></div></div>
     </div>
 
     <div class="transport">
@@ -1267,6 +1306,19 @@ HTML = r"""<meta charset="utf-8">
         <span>應由 <b id="expServer">A</b> 發球</span>
       </div>
     </div>
+
+    <details class="rallybox" id="rallyBox">
+      <summary>回合候選 · ROI v0.2.3 <span id="rallyCount">—</span></summary>
+      <div class="rallybody">
+        <div class="rallyctl">
+          <button class="btn" id="selectRoi" disabled>框選 ROI</button>
+          <button class="btn hot" id="detectRallies" disabled>分析回合</button>
+        </div>
+        <div class="rallynote" id="rallyNote">先框住這一桌與兩位選手。候選只供預覽；得分仍以 A／B 手動標記為準。</div>
+        <div class="rallydiag" id="rallyDiag"></div>
+        <div class="rallylist" id="rallyList"></div>
+      </div>
+    </details>
 
     <div class="streamhead"><span>事件</span><span id="evcount">0</span></div>
     <div class="stream" id="stream"></div>
@@ -1321,8 +1373,10 @@ HTML = r"""<meta charset="utf-8">
   const $ = id => document.getElementById(id);
   const screenEl = $('screen'), emptyEl = $('empty');
 
-  let video = null, events = [], mediaTime = 0, srcName = '', srcPath = '';
+  let video = null, events = [], srcName = '', srcPath = '';
   let outPath = '', ffmpegOK = false, polling = null;
+  let rallyCandidates = [], rallyDiagnostics = null, rallyBusy = false;
+  let roi = null, roiSelecting = false, roiDrag = null;
 
   const num = (id, d) => { const v = +$(id).value; return isFinite(v) ? v : d; };
   const fps    = () => Math.max(1, num('fps', 30));
@@ -1383,6 +1437,8 @@ HTML = r"""<meta charset="utf-8">
       const d = await r.json();
       if (d.cancelled || !d.path) return;
       srcPath = d.path; srcName = d.name; outPath = d.defaultOut;
+      roi = null; rallyCandidates = []; rallyDiagnostics = null;
+      paintRoi(); paintRallies();
       $('srcname').textContent = d.name;
       $('srcname').title = d.path;
       $('outPath').textContent = d.defaultOut;
@@ -1406,24 +1462,81 @@ HTML = r"""<meta charset="utf-8">
     emptyEl.style.display = 'none';
     screenEl.appendChild(video);
     video.addEventListener('loadedmetadata', () => {
-      $('scrub').max = video.duration || 0; tick();
+      $('scrub').max = video.duration || 0; updateRoiLayer(); tick(); updateGo();
     });
     video.addEventListener('timeupdate', tick);
     video.addEventListener('seeked', tick);
     video.addEventListener('error', () => banner('影片無法播放，可能是瀏覽器不支援這個編碼。'));
-    pumpFrames();
+    if (typeof ResizeObserver !== 'undefined') new ResizeObserver(updateRoiLayer).observe(video);
   }
 
-  function pumpFrames() {
-    if (!video || !video.requestVideoFrameCallback) return;
-    video.requestVideoFrameCallback((now, meta) => {
-      mediaTime = meta.mediaTime; tick(); pumpFrames();
-    });
+  function updateRoiLayer() {
+    const layer = $('roiLayer');
+    if (!video || !video.clientWidth || !video.clientHeight) { layer.style.display = 'none'; return; }
+    layer.style.display = 'block';
+    layer.style.left = video.offsetLeft + 'px'; layer.style.top = video.offsetTop + 'px';
+    layer.style.width = video.clientWidth + 'px'; layer.style.height = video.clientHeight + 'px';
+    paintRoi();
   }
+
+  function paintRoi() {
+    const rect = $('roiRect');
+    rect.hidden = !roi;
+    if (!roi) return;
+    rect.style.left = (roi.x * 100) + '%'; rect.style.top = (roi.y * 100) + '%';
+    rect.style.width = (roi.w * 100) + '%'; rect.style.height = (roi.h * 100) + '%';
+  }
+
+  function setRoiSelecting(on) {
+    roiSelecting = on;
+    $('roiLayer').classList.toggle('selecting', on);
+    $('selectRoi').textContent = on ? '拖曳框選…' : (roi ? '重選 ROI' : '框選 ROI');
+    $('rallyNote').textContent = on
+      ? '請在影片上拖曳，框住本桌與兩位選手的主要活動範圍。'
+      : (roi ? 'ROI 已設定。可開始分析；候選不會自動改動標記。'
+             : '先框住這一桌與兩位選手。候選只供預覽；得分仍以 A／B 手動標記為準。');
+    updateGo();
+  }
+
+  $('selectRoi').addEventListener('click', () => {
+    if (!video) return;
+    video.pause(); setRoiSelecting(!roiSelecting);
+  });
+  $('roiLayer').addEventListener('pointerdown', e => {
+    if (!roiSelecting) return;
+    const b = $('roiLayer').getBoundingClientRect();
+    roiDrag = {x: Math.max(0, Math.min(b.width, e.clientX - b.left)),
+               y: Math.max(0, Math.min(b.height, e.clientY - b.top)), b};
+    $('roiLayer').setPointerCapture(e.pointerId);
+  });
+  $('roiLayer').addEventListener('pointermove', e => {
+    if (!roiDrag) return;
+    const x = Math.max(0, Math.min(roiDrag.b.width, e.clientX - roiDrag.b.left));
+    const y = Math.max(0, Math.min(roiDrag.b.height, e.clientY - roiDrag.b.top));
+    const x0 = Math.min(roiDrag.x, x), y0 = Math.min(roiDrag.y, y);
+    roi = {x: x0 / roiDrag.b.width, y: y0 / roiDrag.b.height,
+           w: Math.abs(x - roiDrag.x) / roiDrag.b.width,
+           h: Math.abs(y - roiDrag.y) / roiDrag.b.height};
+    paintRoi();
+  });
+  $('roiLayer').addEventListener('pointerup', e => {
+    if (!roiDrag) return;
+    $('roiLayer').releasePointerCapture(e.pointerId); roiDrag = null;
+    if (!roi || roi.w < .08 || roi.h < .08) {
+      roi = null; paintRoi();
+      $('rallyNote').textContent = '框選範圍太小，請包含球桌與兩位選手。';
+      updateGo(); return;
+    }
+    roi = Object.fromEntries(Object.entries(roi).map(([k,v]) => [k, +v.toFixed(6)]));
+    rallyCandidates = []; rallyDiagnostics = null; paintRallies();
+    setRoiSelecting(false);
+  });
+
   function now() {
     if (!video) return 0;
-    const t = (video.requestVideoFrameCallback && !video.seeking) ? mediaTime : video.currentTime;
-    return isFinite(t) ? t : video.currentTime;
+    // Paused seeks may not produce a video-frame callback. The media element
+    // time is authoritative for the clock, scrubber, and new manual marks.
+    return video.currentTime;
   }
   function tick() {
     if (!video) return;
@@ -1463,9 +1576,119 @@ HTML = r"""<meta charset="utf-8">
     events.splice(idx, 1); refresh();
   }
 
+  /* ───────────────────────── Rally Detection v0.2.3
+     ROI 影像才會產生候選；音訊只佐證接近門檻的視覺片段。
+     只有使用者按下「確認發球」才會寫入事件，得分者仍完全手動。 */
+  function paintRallies() {
+    $('rallyCount').textContent = rallyCandidates.length || '—';
+    const d = rallyDiagnostics;
+    $('rallyDiag').textContent = d && d.motionThreshold != null
+      ? `ROI ${roi ? [roi.x, roi.y, roi.w, roi.h].map(v => v.toFixed(3)).join(',') : '—'} · ` +
+        `motion 基線 ${d.motionBaseline} · 閾值 ${d.motionThreshold}` +
+        `${d.motionSupportThreshold != null ? '/' + d.motionSupportThreshold + '（佐證）' : ''} · ` +
+        `${d.frames} frames · audio ${d.audio && d.audio.available ? d.audio.impacts + ' hits（輔助）' : '無'} · ` +
+        `佐證保留 ${d.audioPromotedCandidates || 0} · 前後修剪 ${d.audioTrimmedCandidates || 0} · ` +
+        `短走動排除 ${d.rejectedBriefCandidates || 0} · valley 切分 ${d.motionValleySplits || 0}`
+      : '';
+    if (!rallyCandidates.length) { $('rallyList').innerHTML = ''; return; }
+    const splitReasons = {
+      short_candidate: '候選太短', no_sustained_valley: '沒有持續低動作',
+      brief_valley: '低動作太短',
+      edge_valley: '低動作在邊緣', short_side: '切後一側太短',
+      shallow_valley: '動作下降不足', no_visual_restart: '後段未重新活動',
+      weak_visual_before: '前段活動不足',
+      low_split_confidence: '切分信心不足',
+      fragment_guard: '避免切成碎片',
+      split_limit: '單候選最多兩個切點',
+      sustained_motion_valley_visual_restart: '持續低動作後重新活動'
+    };
+    const shortReasons = {
+      few_strong_frames: '強動作影格少', weak_visual_peak: '視覺峰值弱',
+      no_audio_support: '無輔助音訊', very_short: '時間很短',
+      incomplete_rise_fall: '起落動作不完整'
+    };
+    $('rallyList').innerHTML = rallyCandidates.map((r, i) => {
+      const used = events.some(e => e.type === 'serve' && Math.abs(e.t - r.start) < .20);
+      const valley = r.motionValleyScore == null ? '—' :
+        `${r.motionValleyScore}/${r.motionValleyDuration}s`;
+      const split = `切點 ${r.splitPoint == null ? '—' : fmt(r.splitPoint)} · ` +
+        `valley ${valley} · 間隔 audio ${r.splitAudioHits || 0} · ` +
+        `切分信心 ${r.splitConfidence == null ? '—' : Math.round(r.splitConfidence * 100) + '%'} ` +
+        `(視覺 ${r.splitVisualConfidence == null ? '—' : Math.round(r.splitVisualConfidence * 100) + '%'}, ` +
+        `音訊扣 ${Math.round((r.splitAudioPenalty || 0) * 100)}%) · ` +
+        `${r.splitDecision === 'split' ? '已切' : '未切'}：${splitReasons[r.splitReason] || r.splitReason || '—'}`;
+      const checks = (r.splitChecks || []).filter(v => v.point != null);
+      const se = r.shortEvidence || {};
+      const shortInfo = se.penalty > 0
+        ? `<small>短候選：基礎 ${Math.round(r.baseConfidence * 100)}% → ` +
+          `${Math.round(r.confidence * 100)}% · 起／落 ${se.rise}/${se.fall} · ` +
+          `${(se.penaltyReasons || []).map(v => shortReasons[v] || v).join('、')}</small>`
+        : '';
+      const allValleys = checks.length ? `<details><summary>檢查 ${checks.length} 個 valley</summary>` +
+        checks.map(v => `<small>${fmt(v.point)} · ${v.motionValleyScore}/${v.motionValleyDuration}s` +
+          ` · 深度 ${v.valleyDepth == null ? '—' : Math.round(v.valleyDepth * 100) + '%'}` +
+          ` · audio ${v.audioHits}（扣 ${Math.round((v.audioPenalty || 0) * 100)}%）` +
+          ` · 切分 ${v.splitConfidence == null ? '—' : Math.round(v.splitConfidence * 100) + '%'}` +
+          ` · ${v.decision === 'split' ? '已切' : '未切'}：${splitReasons[v.reason] || v.reason}</small>`).join('') +
+        `</details>` : '';
+      return `<div class="rallyrow${r.confidenceTier === 'low' ? ' low' : ''}" data-rally="${i}" title="點一下從候選開頭預覽">
+        <button type="button" class="rallyseek" data-rally-seek="${i}" aria-label="預覽候選 ${i + 1}，從 ${fmt(r.start)} 開始">#${String(i + 1).padStart(2, '0')}</button>
+        <div class="rallyinfo">${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
+          ${r.confidenceTier === 'low' ? `<strong class="confidence">低信心 · ${Math.round(r.confidence * 100)}% · 請人工確認</strong>` : ''}
+          <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
+          `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
+          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small>` +
+          `<small>${split}</small>${shortInfo}${allValleys}</div>
+        <button type="button" class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
+      </div>`;
+    }).join('');
+  }
+
+  $('detectRallies').addEventListener('click', async () => {
+    if (!srcPath || !roi || rallyBusy) return;
+    rallyBusy = true; updateGo(); $('rallyBox').open = true;
+    $('rallyNote').textContent = '正在分析 ROI 影像；音訊只作輔助，長影片需要稍等一下…';
+    try {
+      const r = await fetch('/detect-rallies', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({roi, duration: video && video.duration})
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || '分析失敗');
+      rallyCandidates = d.candidates || []; rallyDiagnostics = d.diagnostics || null;
+      paintRallies();
+      $('rallyNote').textContent = rallyCandidates.length
+        ? `找到 ${rallyCandidates.length} 個視覺候選。點區間預覽；只有按「確認發球」才會加入事件。`
+        : '這個 ROI 沒有找到足夠明確的視覺候選；請重選更貼近本桌與兩位選手的範圍。';
+    } catch (e) {
+      $('rallyNote').textContent = '回合分析失敗：' + e.message + '。原本的手動標記功能不受影響。';
+    } finally {
+      rallyBusy = false; updateGo();
+    }
+  });
+
+  $('rallyList').addEventListener('click', e => {
+    const use = e.target.closest('[data-rally-serve]');
+    const row = e.target.closest('[data-rally]');
+    if (!row || !video) return;
+    const candidate = rallyCandidates[+row.dataset.rally];
+    if (!candidate) return;
+    if (use) {
+      const t = Math.round(candidate.start * fps()) / fps();
+      events.push({t, type: 'serve'}); events.sort((a,b) => a.t - b.t);
+      paintRallies(); refresh();
+      return;
+    }
+    // The whole candidate list lives inside #rallyBox (<details>). Only the
+    // nested diagnostic disclosure control should suppress preview seeking.
+    if (e.target.closest('.rallyrow summary')) return;
+    video.pause(); video.currentTime = candidate.start; tick();
+  });
+
   /* ───────────────────────── 向 Python 要計分結果 */
   let seq = 0, timer = null;
   function refresh() {
+    paintRallies();
     clearTimeout(timer);
     timer = setTimeout(doRefresh, 50);
   }
@@ -1584,6 +1807,9 @@ HTML = r"""<meta charset="utf-8">
     $('go').disabled = running || !ok;
     if (!ffmpegOK && srcPath) $('go').textContent = '找不到 ffmpeg';
     else $('go').textContent = running ? '製作中…' : '製作成片';
+    $('selectRoi').disabled = !video || rallyBusy;
+    $('detectRallies').disabled = rallyBusy || !srcPath || !ffmpegOK || !roi || roiSelecting;
+    $('detectRallies').textContent = rallyBusy ? '分析中…' : '分析回合';
   }
 
   function banner(msg) {
@@ -1596,7 +1822,7 @@ HTML = r"""<meta charset="utf-8">
     const k = e.target.closest('[data-kill]');
     if (k) { events.splice(+k.dataset.kill, 1); refresh(); return; }
     const row = e.target.closest('.ev');
-    if (row && video) { video.pause(); video.currentTime = events[+row.dataset.i].t; }
+    if (row && video) { video.pause(); video.currentTime = events[+row.dataset.i].t; tick(); }
   });
 
   function paintAccent() {
@@ -1614,7 +1840,7 @@ HTML = r"""<meta charset="utf-8">
   /* ───────────────────────── 鍵盤 */
   addEventListener('keydown', e => {
     const el = document.activeElement;
-    if (el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) return;
+    if (el && /^(INPUT|SELECT|TEXTAREA|BUTTON|SUMMARY)$/.test(el.tagName)) return;
     if (e.metaKey || e.ctrlKey) return;
     const step = e.altKey ? 5 : e.shiftKey ? 1 : 1 / fps();
     switch (e.key) {
@@ -1847,6 +2073,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p == "/fold":
                 return self._fold()
+            if p == "/detect-rallies":
+                return self._detect_rallies()
             if p == "/pick-video":
                 return self._pick()
             if p == "/render":
@@ -1941,6 +2169,26 @@ class Handler(BaseHTTPRequestHandler):
         else:
             res["cuts"] = dict(n=0, seconds=0.0, dropped=0, outSeconds=0.0, pct=0)
         return self._json(res)
+
+    # ── 實驗性 ROI 回合候選（不寫入事件、不判斷勝方）
+    def _detect_rallies(self):
+        with STATE_LOCK:
+            video = STATE["video"]
+            ffmpeg = STATE["ffmpeg"]
+        if not video:
+            return self._json(dict(error="還沒有載入影片。"), 400)
+        if not ffmpeg:
+            return self._json(dict(error="找不到 ffmpeg，無法分析影片。"), 400)
+        if detect_video is None:
+            return self._json(dict(error="找不到 rally_detection.py。"), 503)
+        req = self._body()
+        roi = req.get("roi")
+        duration = req.get("duration")
+        try:
+            duration = float(duration) if duration is not None else None
+            return self._json(detect_video(video, roi, ffmpeg, duration=duration))
+        except (DetectionError, TypeError, ValueError) as ex:
+            return self._json(dict(error=str(ex)), 400)
 
     # ── 原生檔案對話框
     def _pick(self):
