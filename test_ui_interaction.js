@@ -45,9 +45,13 @@ assert.match(node('rallyList').innerHTML, /class="confidence">低信心 · 40% �
 assert.match(node('rallyList').innerHTML, /data-rally-seek="0"/);
 
 const row = {dataset: {rally: '0'}};
+const outerDetails = {id: 'rallyBox'};
 const target = selected => ({closest(selector) { return selected[selector] || null; }});
 const rallyClick = node('rallyList').listeners.click;
-function clickRally(selected) { rallyClick({target: target(selected)}); }
+function clickRally(selected) {
+  // All candidate targets are inside the outer <details id="rallyBox">.
+  rallyClick({target: target({details: outerDetails, ...selected})});
+}
 
 clickRally({'[data-rally]': row});
 assert.equal(video.currentTime, candidate.start);
@@ -56,14 +60,30 @@ assert.equal(context.testUI.events().length, 0, 'row click only previews');
 
 video.currentTime = 0;
 clickRally({'[data-rally]': row, '[data-rally-seek]': {dataset: {rallySeek: '0'}}});
-assert.equal(video.currentTime, candidate.start, 'timestamp button previews');
+assert.equal(video.currentTime, candidate.start, 'candidate number button previews');
 assert.equal(context.testUI.events().length, 0);
 
 video.currentTime = 0;
-clickRally({'[data-rally]': row, details: {}});
-assert.equal(video.currentTime, 0, 'diagnostics do not seek or confirm');
+clickRally({'[data-rally]': row, '.rallyinfo': {textContent: '02:31.80 → 02:34.00'}});
+assert.equal(video.currentTime, candidate.start, 'timestamp text previews');
 assert.equal(context.testUI.events().length, 0);
 
+video.currentTime = 0;
+clickRally({'[data-rally]': row, '.rallyrow summary': {}});
+assert.equal(video.currentTime, 0, 'diagnostic disclosure only toggles');
+assert.equal(context.testUI.events().length, 0);
+
+clickRally({'[data-rally]': row, details: {id: 'innerValley'}});
+assert.equal(video.currentTime, candidate.start, 'diagnostic text is a non-button row click');
+assert.equal(context.testUI.events().length, 0);
+
+context.testUI.setCandidates([candidate]); // repaint replaces rows, but delegation stays
+video.currentTime = 0;
+clickRally({'[data-rally]': row});
+assert.equal(video.currentTime, candidate.start, 'seek survives candidate rerender');
+assert.equal(context.testUI.events().length, 0);
+
+video.currentTime = 0;
 clickRally({'[data-rally]': row, '[data-rally-serve]': {dataset: {rallyServe: '0'}}});
 assert.equal(context.testUI.events().length, 1, 'explicit confirmation adds S');
 assert.equal(context.testUI.events()[0].type, 'serve');

@@ -1679,7 +1679,9 @@ HTML = r"""<meta charset="utf-8">
       paintRallies(); refresh();
       return;
     }
-    if (e.target.closest('details')) return;
+    // The whole candidate list lives inside #rallyBox (<details>). Only the
+    // nested diagnostic disclosure control should suppress preview seeking.
+    if (e.target.closest('.rallyrow summary')) return;
     video.pause(); video.currentTime = candidate.start; tick();
   });
 
