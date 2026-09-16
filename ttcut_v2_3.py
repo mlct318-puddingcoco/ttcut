@@ -1586,17 +1586,33 @@ HTML = r"""<meta charset="utf-8">
         `${d.motionSupportThreshold != null ? '/' + d.motionSupportThreshold + '（佐證）' : ''} · ` +
         `${d.frames} frames · audio ${d.audio && d.audio.available ? d.audio.impacts + ' hits（輔助）' : '無'} · ` +
         `佐證保留 ${d.audioPromotedCandidates || 0} · 前後修剪 ${d.audioTrimmedCandidates || 0} · ` +
-        `短走動排除 ${d.rejectedBriefCandidates || 0}`
+        `短走動排除 ${d.rejectedBriefCandidates || 0} · valley 切分 ${d.motionValleySplits || 0}`
       : '';
     if (!rallyCandidates.length) { $('rallyList').innerHTML = ''; return; }
+    const splitReasons = {
+      short_candidate: '候選太短', no_sustained_valley: '沒有持續低動作',
+      edge_valley: '低動作在邊緣', short_side: '切後一側太短',
+      shallow_valley: '動作下降不足', no_visual_restart: '後段未重新活動',
+      weak_visual_before: '前段活動不足',
+      audio_continues_during_pause: '停頓仍有連續擊球聲',
+      fragment_guard: '避免切成碎片',
+      split_limit: '單候選最多兩個切點',
+      sustained_motion_valley_visual_restart: '持續低動作後重新活動'
+    };
     $('rallyList').innerHTML = rallyCandidates.map((r, i) => {
       const used = events.some(e => e.type === 'serve' && Math.abs(e.t - r.start) < .20);
+      const valley = r.motionValleyScore == null ? '—' :
+        `${r.motionValleyScore}/${r.motionValleyDuration}s`;
+      const split = `切點 ${r.splitPoint == null ? '—' : fmt(r.splitPoint)} · ` +
+        `valley ${valley} · 間隔 audio ${r.splitAudioHits || 0} · ` +
+        `${r.splitDecision === 'split' ? '已切' : '未切'}：${splitReasons[r.splitReason] || r.splitReason || '—'}`;
       return `<div class="rallyrow" data-rally="${i}" title="點一下從候選開頭預覽">
         <time>#${String(i + 1).padStart(2, '0')}</time>
-        <span>${fmt(r.start)} → ${fmt(r.end)}
+        <span>${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
           <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
           `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
-          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small></span>
+          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small>` +
+          `<small>${split}</small></span>
         <button class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
       </div>`;
     }).join('');

@@ -105,6 +105,75 @@ class MotionTests(unittest.TestCase):
         self.assertEqual(candidates, [])
         self.assertEqual(diagnostics["rejectedBriefCandidates"], 1)
 
+    def _joined_rallies(self, valleys, valley_motion=1.5):
+        metrics = self._metrics([(20, 56)])
+        for first, last in valleys:
+            for item in metrics[first:last + 1]:
+                item.update(motion=valley_motion, left=valley_motion,
+                            right=valley_motion * .8)
+        return metrics
+
+    def test_two_sustained_motion_valleys_split_three_rallies(self):
+        metrics = self._joined_rallies([(30, 31), (44, 45)])
+        candidates, diagnostics = analyze_motion(metrics, [],
+                                                 DetectorConfig(), 80)
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual(diagnostics["motionValleySplits"], 2)
+        self.assertTrue(all(c["splitDecision"] == "split" for c in candidates))
+        self.assertLess(candidates[0]["end"], candidates[1]["start"])
+        self.assertLess(candidates[1]["end"], candidates[2]["start"])
+        self.assertTrue(all(c["motionValleyDuration"] >= 1.0
+                            for c in candidates))
+
+    def test_one_frame_motion_dip_does_not_split(self):
+        metrics = self._joined_rallies([(35, 35)])
+        candidates, diagnostics = analyze_motion(metrics, [],
+                                                 DetectorConfig(), 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(diagnostics["motionValleySplits"], 0)
+
+    def test_audio_vetoes_shallow_short_pause(self):
+        config = DetectorConfig(min_threshold=5.0)
+        metrics = self._joined_rallies([(35, 36)], valley_motion=4.0)
+        candidates, diagnostics = analyze_motion(metrics, [17.6, 18.0],
+                                                 config, 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(diagnostics["motionValleySplits"], 0)
+        self.assertEqual(candidates[0]["splitReason"],
+                         "audio_continues_during_pause")
+
+    def test_no_visual_restart_does_not_split(self):
+        config = DetectorConfig(min_threshold=5.0)
+        metrics = self._joined_rallies([(35, 36)], valley_motion=1.5)
+        for item in metrics[37:57]:
+            item.update(motion=5.0, left=5.0, right=4.0)
+        candidates, diagnostics = analyze_motion(metrics, [], config, 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(diagnostics["motionValleySplits"], 0)
+        self.assertEqual(candidates[0]["splitReason"], "no_visual_restart")
+
+    def test_split_cannot_create_one_sided_child(self):
+        metrics = self._joined_rallies([(35, 36)])
+        for item in metrics[37:57]:
+            item["right"] = .01
+        candidates, diagnostics = analyze_motion(metrics, [],
+                                                 DetectorConfig(), 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(diagnostics["motionValleySplits"], 0)
+        self.assertEqual(candidates[0]["splitReason"], "fragment_guard")
+
+    def test_one_long_candidate_is_limited_to_three_pieces(self):
+        metrics = self._metrics([(20, 80)])
+        for first in (31, 46, 61):
+            for item in metrics[first:first + 2]:
+                item.update(motion=1.5, left=1.5, right=1.2)
+        candidates, diagnostics = analyze_motion(metrics, [],
+                                                 DetectorConfig(), 80)
+        self.assertEqual(len(candidates), 3)
+        self.assertEqual(diagnostics["motionValleySplits"], 2)
+        self.assertTrue(any(check["reason"] == "split_limit"
+                            for check in candidates[0]["splitChecks"]))
+
     def test_one_sided_motion_is_rejected(self):
         metrics = self._metrics([(20, 35)])
         for item in metrics[20:36]:

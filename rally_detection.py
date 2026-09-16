@@ -47,6 +47,15 @@ class DetectorConfig:
     brief_visual_seconds: float = 2.75
     brief_min_side_balance: float = 0.18
     brief_min_audio_hits: int = 3
+    # Secondary segmentation only; these do not change the ROI detector.
+    split_min_group_seconds: float = 6.0
+    split_min_side_seconds: float = 2.5
+    split_min_valley_seconds: float = 1.0
+    split_max_points_per_candidate: int = 2
+    split_valley_threshold_ratio: float = 0.95
+    split_valley_peak_ratio: float = 0.62
+    split_restart_peak_ratio: float = 1.12
+    split_audio_veto_hits: int = 2
     pre_roll_seconds: float = 0.70
     post_roll_seconds: float = 0.45
     audio_sample_rate: int = 8000
@@ -279,8 +288,141 @@ def _trim_on_audio_gap(group, metrics, audio_impacts):
     return kept, basis
 
 
+def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
+                             threshold, config):
+    """Split a long visual group only at sustained valleys with visual restart.
+
+    Audio cannot propose a split. Impacts during a shallow, short valley may
+    veto one, protecting a single rally with a momentary motion pause.
+    """
+    frame_seconds = 1 / config.sample_fps
+    span = (metrics[group[-1]]["t"] - metrics[group[0]]["t"]
+            + frame_seconds)
+    if span < config.split_min_group_seconds:
+        return [(group, None)], [dict(decision="keep", reason="short_candidate")]
+
+    low_limit = threshold * config.split_valley_threshold_ratio
+    min_valley_frames = max(2, math.ceil(config.split_min_valley_seconds
+                                          * config.sample_fps))
+    nearby = max(2, round(2.5 * config.sample_fps))
+    full = range(group[0], group[-1] + 1)
+    runs = []
+    run = []
+    for index in full:
+        if raw[index] <= low_limit:
+            run.append(index)
+        elif run:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+
+    checks = []
+    viable = []
+    for valley in runs:
+        if len(valley) < min_valley_frames:
+            continue
+        first, last = valley[0], valley[-1]
+        before = [i for i in group if i < first]
+        after = [i for i in group if i > last]
+        point = (metrics[first]["t"] + metrics[last]["t"]) / 2
+        score = sum(raw[i] for i in valley) / len(valley)
+        duration = len(valley) * frame_seconds
+        hits = sum(metrics[first]["t"] - .1 <= t <=
+                   metrics[last]["t"] + frame_seconds + .1
+                   for t in audio_impacts)
+        check = dict(point=round(point, 3), motionValleyScore=round(score, 2),
+                     motionValleyDuration=round(duration, 2),
+                     audioHits=hits, decision="keep", reason="")
+        checks.append(check)
+        if not before or not after:
+            check["reason"] = "edge_valley"
+            continue
+        left_span = metrics[before[-1]]["t"] - metrics[before[0]]["t"] + frame_seconds
+        right_span = metrics[after[-1]]["t"] - metrics[after[0]]["t"] + frame_seconds
+        if min(left_span, right_span) < config.split_min_side_seconds:
+            check["reason"] = "short_side"
+            continue
+        left_peak = max(smoothed[i] for i in before[-nearby:])
+        right_peak = max(smoothed[i] for i in after[:nearby])
+        check["leftPeak"] = round(left_peak, 2)
+        check["rightPeak"] = round(right_peak, 2)
+        if score > min(left_peak, right_peak) * config.split_valley_peak_ratio:
+            check["reason"] = "shallow_valley"
+            continue
+        if (right_peak < threshold * config.split_restart_peak_ratio
+                or sum(smoothed[i] >= threshold for i in after[:nearby]) < 2):
+            check["reason"] = "no_visual_restart"
+            continue
+        if (left_peak < threshold * config.split_restart_peak_ratio
+                or sum(smoothed[i] >= threshold for i in before[-nearby:]) < 2):
+            check["reason"] = "weak_visual_before"
+            continue
+        if (duration <= 1.5 and hits >= config.split_audio_veto_hits
+                and score > min(left_peak, right_peak) * 0.45):
+            check["reason"] = "audio_continues_during_pause"
+            continue
+        viable.append((first, last, check))
+
+    if not viable:
+        return [(group, None)], checks or [dict(
+            decision="keep", reason="no_sustained_valley")]
+
+    # Choose strongest valleys first. Each resulting piece must remain a
+    # plausible visual range; this prevents a long rally becoming fragments.
+    accepted = []
+    for first, last, check in sorted(
+            viable, key=lambda item: item[2]["motionValleyScore"]):
+        if len(accepted) >= config.split_max_points_per_candidate:
+            check["reason"] = "split_limit"
+            continue
+        proposed = sorted(accepted + [(first, last, check)])
+        pieces = []
+        cursor = group[0]
+        for a, b, _ in proposed:
+            pieces.append([i for i in group if cursor <= i < a])
+            cursor = b + 1
+        pieces.append([i for i in group if i >= cursor])
+        def viable_piece(piece):
+            if not piece or len(piece) < config.min_active_frames:
+                return False
+            if (metrics[piece[-1]]["t"] - metrics[piece[0]]["t"]
+                    + frame_seconds < config.split_min_side_seconds):
+                return False
+            window = metrics[piece[0]:piece[-1] + 1]
+            left = sum(item["left"] for item in window)
+            right = sum(item["right"] for item in window)
+            if min(left, right) / max(.001, max(left, right)) < .12:
+                return False
+            strong = sum(smoothed[i] >= threshold for i in piece)
+            if strong >= config.min_active_frames:
+                return True
+            start = metrics[piece[0]]["t"] - config.pre_roll_seconds
+            end = metrics[piece[-1]]["t"] + config.post_roll_seconds
+            hits = sum(start <= t <= end for t in audio_impacts)
+            return strong >= 1 and hits >= config.auxiliary_audio_hits
+
+        if any(not viable_piece(piece) for piece in pieces):
+            check["reason"] = "fragment_guard"
+            continue
+        accepted = proposed
+        check["decision"] = "split"
+        check["reason"] = "sustained_motion_valley_visual_restart"
+
+    if not accepted:
+        return [(group, None)], checks
+    parts = []
+    for index in range(len(accepted) + 1):
+        start = accepted[index - 1][1] + 1 if index else group[0]
+        end = accepted[index][0] if index < len(accepted) else group[-1] + 1
+        part = [i for i in group if start <= i < end]
+        point = accepted[index - 1][2] if index else accepted[0][2]
+        parts.append((part, point))
+    return parts, checks
+
+
 def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
-    """Create candidates from visual motion; audio can only annotate/score them."""
+    """Create ROI visual candidates, then optionally split sustained valleys."""
     config = config or DetectorConfig()
     audio_impacts = audio_impacts or []
     if not metrics:
@@ -309,13 +451,29 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
         else:
             groups[-1].append(index)
 
-    trimmed_groups = [_trim_on_audio_gap(group, metrics, audio_impacts)
-                      for group in groups]
+    segmented_groups = []
+    all_split_checks = []
+    for group in groups:
+        parts, checks = _split_on_motion_valleys(
+            group, metrics, raw, smoothed, audio_impacts, threshold, config)
+        all_split_checks.extend(checks)
+        if len(parts) > 1:
+            for part, split_check in parts:
+                segmented_groups.append((part, "motion-valley-split",
+                                         split_check, checks))
+        else:
+            kept, basis = _trim_on_audio_gap(group, metrics, audio_impacts)
+            best_check = max(checks, key=lambda check: (
+                check["reason"] not in ("short_candidate", "edge_valley"),
+                check.get("motionValleyDuration", 0),
+                -check.get("motionValleyScore", float("inf")),
+            ))
+            segmented_groups.append((kept, basis, best_check, checks))
     candidates = []
     promoted = rejected_brief = 0
     trimmed = 0
-    for group, boundary_basis in trimmed_groups:
-        if boundary_basis != "motion":
+    for group, boundary_basis, split_check, split_checks in segmented_groups:
+        if "audio-trim" in boundary_basis:
             trimmed += 1
         first, last = group[0], group[-1]
         visual_span = metrics[last]["t"] - metrics[first]["t"] + 1 / config.sample_fps
@@ -357,6 +515,7 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
                          + 0.04 * audio_support)
         candidates.append(dict(
             start=round(start, 3), end=round(max(start, end), 3),
+            duration=round(max(0.0, end - start), 3),
             visualStart=round(metrics[first]["t"], 3),
             visualEnd=round(metrics[last]["t"], 3),
             motionMean=round(motion_mean, 2), motionPeak=round(motion_peak, 2),
@@ -364,6 +523,13 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
             strongFrames=strong_frames, supportFrames=len(group),
             audioHits=len(hits), audioSupport=round(audio_support, 2),
             confidence=round(confidence, 2), boundaryBasis=boundary_basis,
+            splitPoint=(split_check.get("point")
+                        if split_check["decision"] == "split" else None),
+            motionValleyScore=split_check.get("motionValleyScore"),
+            motionValleyDuration=split_check.get("motionValleyDuration"),
+            splitAudioHits=split_check.get("audioHits", 0),
+            splitDecision=split_check["decision"],
+            splitReason=split_check["reason"], splitChecks=split_checks,
         ))
     diagnostics = dict(
         motionBaseline=round(baseline, 2), motionActivity=round(activity, 2),
@@ -373,6 +539,10 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
         visualGroups=len(groups), audioPromotedCandidates=promoted,
         rejectedBriefCandidates=rejected_brief, audioTrimmedCandidates=trimmed,
         audioAssistedSplits=0,
+        motionValleySplits=sum(check["decision"] == "split"
+                               for check in all_split_checks),
+        motionValleysKept=sum(check["decision"] == "keep"
+                             for check in all_split_checks),
     )
     return candidates, diagnostics
 
@@ -401,8 +571,8 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
             sampleFps=config.sample_fps,
             analysisSize=[config.analysis_width, config.analysis_height],
             **motion_diagnostics, audio=audio_diagnostics,
-            note=("候選由 ROI 視覺動態產生；音訊只能佐證接近門檻的視覺片段，"
-                  "或協助修剪很短的前後移動，不會建立或增加候選。"),
+            note=("候選由 ROI 視覺動態產生；長候選只在持續低動作及視覺重新啟動時切分。"
+                  "音訊可否決短暫停頓的誤切，不能單獨建立回合。"),
         ),
     )
 
@@ -432,17 +602,25 @@ def main(argv=None):
     print("候選由 ROI 影像產生；音訊只作輔助。人工確認前不會建立事件。\n")
     for i, item in enumerate(result["candidates"], 1):
         print(f"{i:3d}  {item['start']:8.2f} → {item['end']:8.2f}  "
+              f"duration {item['duration']:5.2f}  "
               f"motion {item['motionMean']:5.2f}/{item['motionPeak']:5.2f}  "
               f"左右 {item['sideBalance']:.2f}  audio {item['audioHits']:2d}  "
               f"frames {item['strongFrames']}/{item['supportFrames']}  "
               f"{item['boundaryBasis']}  score {item['confidence']:.0%}")
+        valley = (f"{item['motionValleyScore']:.2f}/"
+                  f"{item['motionValleyDuration']:.2f}s"
+                  if item["motionValleyScore"] is not None else "—")
+        print(f"     split {item['splitPoint'] if item['splitPoint'] is not None else '—'}"
+              f" · valley {valley} · audio {item['splitAudioHits']}"
+              f" · {item['splitDecision']}: {item['splitReason']}")
     diagnostics = result["diagnostics"]
     print(f"\n共 {len(result['candidates'])} 個視覺候選。"
           f" motion 閾值 {diagnostics['motionThreshold']}/"
           f"{diagnostics['motionSupportThreshold']}（佐證）；"
           f"佐證保留 {diagnostics['audioPromotedCandidates']}，"
           f"前後修剪 {diagnostics['audioTrimmedCandidates']}，"
-          f"短走動排除 {diagnostics['rejectedBriefCandidates']}。")
+          f"短走動排除 {diagnostics['rejectedBriefCandidates']}，"
+          f"motion valley 切分 {diagnostics['motionValleySplits']}。")
 
 
 if __name__ == "__main__":
