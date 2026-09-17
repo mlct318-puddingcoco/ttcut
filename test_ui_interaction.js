@@ -8,11 +8,13 @@ const html = source.split('HTML = r"""')[1].split('"""\n\n# ──')[0];
 assert.match(html, /id="tailPad" value="2\.0"/);
 assert.match(html, /id="leadPad" value="0\.8"/);
 assert.match(html, /id="minCut" value="2\.5"/);
+assert.match(html, /id="scoreboardStyle"[^>]*>[\s\S]*?<option value="koko" selected>/);
+assert.match(html, /<option value="ttcut">ttcut 原版<\/option>/);
 
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, tick };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, docPayload, tick };\n})();';
 
 const nodes = new Map();
 function node(id) {
@@ -36,6 +38,11 @@ vm.runInNewContext(script, context);
 const video = {currentTime: 0, duration: 300, paused: false,
   pause() { this.paused = true; }};
 context.testUI.setVideo(video);
+node('scoreboardStyle').value = 'koko';
+assert.equal(context.testUI.docPayload().scoreboard.style, 'koko');
+node('scoreboardStyle').value = 'ttcut';
+assert.equal(context.testUI.docPayload().scoreboard.style, 'ttcut');
+node('scoreboardStyle').value = 'koko';
 const candidate = {start: 151.8, end: 154, duration: 2.2, confidence: .4,
   confidenceTier: 'low', motionMean: 1, motionPeak: 2, sideBalance: 1,
   strongFrames: 2, supportFrames: 3, audioHits: 0};

@@ -60,7 +60,7 @@ ttcut V2 — 桌球比賽影片：標記、剪去撿球、疊上常駐計分板�
     Windows: 下載 ffmpeg.exe 放在本腳本旁邊，或用 --ffmpeg 指定資料夾
 """
 
-import argparse, json, mimetypes, os, platform, re, shutil, socket
+import argparse, json, mimetypes, os, platform, re, shutil, socket, unicodedata
 import subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -97,6 +97,18 @@ C_RULE     = "&H6E4820&"      # 分隔線
 A_PANEL, A_CHIP, A_RULE = 0x1E, 0x00, 0x40    # 0x00 全不透明 → 0xFF 全透明
 
 DEFAULT_ACCENT = "#FF7A18"    # 得分數字與名字左側裝飾條共用的強調色
+
+# Koko 彩色表格；基準為 1920×1080，與原版共用等比縮放係數。
+KOKO_NAME_W, KOKO_GAMES_W, KOKO_POINTS_W = 510, 78, 92
+KOKO_ROW_H = 60
+KOKO_NAME_PAD = 24
+KOKO_NAME_FS, KOKO_NAME_MIN_FS = 34, 22
+KOKO_NUM_FS = 42
+KOKO_NAME_BG = "&H201810&"     # #101820，深色半透明
+KOKO_GAMES_BG = "&H9B5519&"    # #19559B，藍
+KOKO_POINTS_BG = "&H3F7014&"   # #14703F，綠
+KOKO_WHITE = "&HFFFFFF&"
+KOKO_NAME_ALPHA = 0x20
 
 
 C_DIM      = "&HCEB28F&"      # 次要文字：偏暗的藍灰
@@ -380,6 +392,77 @@ def rect(x, y, w, h, colour, alpha, layer=0):
     return layer, f"{{{tags}}}m 0 0 l {w} 0 l {w} {h} l 0 {h}"
 
 
+def koko_layout(width, height):
+    """固定欄位幾何，以 1080p 座標等比縮放到輸出解析度。"""
+    k = min(width / BASE_W, height / BASE_H)
+    s = lambda value: round(value * k)
+    name_w, games_w, points_w = map(s, (KOKO_NAME_W, KOKO_GAMES_W, KOKO_POINTS_W))
+    row_h = s(KOKO_ROW_H)
+    x = s(PAD_L)
+    y = height - s(PAD_B) - 2 * row_h
+    return dict(k=k, x=x, y=y, name_w=name_w, games_w=games_w,
+                points_w=points_w, row_h=row_h,
+                games_cx=x + name_w + games_w // 2,
+                points_cx=x + name_w + games_w + points_w // 2)
+
+
+def koko_name_size(name):
+    """只縮姓名字級；保留固定欄寬，超過最小字級時由 ASS clip 防溢出。"""
+    units = sum(1.0 if unicodedata.east_asian_width(ch) in "WF" else 0.58
+                for ch in ass_text(name))
+    available = KOKO_NAME_W - 2 * KOKO_NAME_PAD
+    return max(KOKO_NAME_MIN_FS,
+               min(KOKO_NAME_FS, int(available / max(units, 1))))
+
+
+def koko_scoreboard_lines(stamped, total, names, width, height):
+    """兩列固定表格；每項為 (layer, style, start, end, ASS text)。"""
+    geo = koko_layout(width, height)
+    k, x, y = geo["k"], geo["x"], geo["y"]
+    nw, gw, pw, rh = (geo[key] for key in
+                       ("name_w", "games_w", "points_w", "row_h"))
+    s = lambda value: round(value * k)
+    total_w = nw + gw + pw
+    out = []
+    for row in (0, 1):
+        top = y + row * rh
+        for left, cell_w, colour, alpha in (
+                (x, nw, KOKO_NAME_BG, KOKO_NAME_ALPHA),
+                (x + nw, gw, KOKO_GAMES_BG, 0),
+                (x + nw + gw, pw, KOKO_POINTS_BG, 0)):
+            out.append((0, "Gfx", 0, total,
+                        rect(left, top, cell_w, rh, colour, alpha)[1]))
+        name_x = x + s(KOKO_NAME_PAD)
+        name_y = top + rh // 2
+        clip_right = x + nw - s(KOKO_NAME_PAD)
+        fs = s(koko_name_size(names[row]))
+        out.append((1, "Nm", 0, total,
+                    f"{{\\an4\\pos({name_x},{name_y})\\fs{fs}\\b1"
+                    f"\\1c{KOKO_WHITE}\\clip({name_x},{top},{clip_right},{top + rh})}}"
+                    f"{ass_text(names[row])}"))
+    # 細分隔線固定在欄位邊界，避免文字或雙位數改變幾何。
+    rule = max(1, s(2))
+    for bx, by, bw, bh in ((x, y + rh, total_w, rule),
+                           (x + nw, y, rule, 2 * rh),
+                           (x + nw + gw, y, rule, 2 * rh)):
+        out.append((1, "Gfx", 0, total,
+                    rect(bx, by, bw, bh, KOKO_NAME_BG, 0)[1]))
+    fs_num = s(KOKO_NUM_FS)
+    for i, (start, gA, gB, a, b) in enumerate(stamped):
+        end = stamped[i + 1][0] if i + 1 < len(stamped) else total
+        if end - start < 0.02:
+            continue
+        for row, (games, points) in enumerate(((gA, a), (gB, b))):
+            cy = y + row * rh + rh // 2
+            out.append((2, "Nu", start, end,
+                        f"{{\\an5\\pos({geo['games_cx']},{cy})\\fs{fs_num}"
+                        f"\\b1\\1c{KOKO_WHITE}}}{games}"))
+            out.append((2, "Nu", start, end,
+                        f"{{\\an5\\pos({geo['points_cx']},{cy})\\fs{fs_num}"
+                        f"\\b1\\1c{KOKO_WHITE}}}{points}"))
+    return out
+
+
 def stats_lines(stats, k, width, height, c_accent):
     """片尾數據統計看板，回傳 (layer, style, 文字) 的串列。
 
@@ -489,7 +572,7 @@ def stats_lines(stats, k, width, height, c_accent):
 
 def build_ass(states, src2out, total, names, width, height,
               font_name=FONT_NAME, font_num=FONT_NUM, accent=None,
-              stats=None, hold=0.0):
+              stats=None, hold=0.0, scoreboard_style="ttcut"):
     # 得分數字與名字左側的裝飾條共用同一個色，一起換
     c_accent = c_points = accent or C_ACCENT
     k = min(width / BASE_W, height / BASE_H)
@@ -526,37 +609,45 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     add = lambda layer, style, a, b, txt: lines.append(
         f"Dialogue: {layer},{ts(a)},{ts(b)},{style},,0,0,0,,{txt}")
 
-    # ── 底板、局數色塊、橘色側邊、分隔線（整片常駐）
-    # 同一 layer 內依出現順序疊，所以分隔線放最後才會壓在色塊上面
-    for layer, d in [
-        rect(x0, y0, pw, rh * 2, C_PANEL, A_PANEL),                    # 底板
-        rect(gx, y0, gw, rh, C_GAMES_BG, A_CHIP),                      # 局數色塊（上）
-        rect(gx, y0 + rh, gw, rh, C_GAMES_BG, A_CHIP),                 # 局數色塊（下）
-        rect(x0, y0, S(5), rh * 2, c_accent, 0x00),                    # 側邊裝飾條
-        rect(x0, y0 + rh, pw, max(1, S(2)), C_RULE, A_RULE),           # 橫向分隔
-        rect(gx, y0, max(1, S(2)), rh * 2, C_RULE, A_RULE),
-        rect(x0 + S(COL_POINTS_X), y0, max(1, S(2)), rh * 2, C_RULE, A_RULE),
-    ]:
-        add(layer, "Gfx", 0, total, d)
-
-    # ── 選手名（常駐）
-    for i, nm in enumerate(names):
-        add(1, "Nm", 0, total,
-            f"{{\\an4\\pos({name_x},{row_y[i]})\\1c{C_NAME}}}{ass_text(nm)}")
-
-    # ── 局數與該局得分（隨事件變動）：同字級、同字重，靠底色分辨
     stamped = [(0.0, *states[0][1:])] if states[0][0] is None else []
     stamped += [(src2out(t), gA, gB, a, b) for t, gA, gB, a, b in states if t is not None]
 
-    for i, (t, gA, gB, a, b) in enumerate(stamped):
-        end = stamped[i + 1][0] if i + 1 < len(stamped) else total
-        if end - t < 0.02:
-            continue
-        for row, (g, p) in enumerate(((gA, a), (gB, b))):
-            add(2, "Nu", t, end,
-                f"{{\\an5\\pos({games_cx},{row_y[row]})\\fs{fs}\\b1\\1c{C_GAMES}}}{g}")
-            add(2, "Nu", t, end,
-                f"{{\\an5\\pos({points_cx},{row_y[row]})\\fs{fs}\\b1\\1c{c_points}}}{p}")
+    if scoreboard_style not in ("ttcut", "koko"):
+        raise ValueError(f"未知比分板樣式：{scoreboard_style}")
+    if scoreboard_style == "koko":
+        for layer, style, start, end, body in koko_scoreboard_lines(
+                stamped, total, names, width, height):
+            add(layer, style, start, end, body)
+    else:
+        # 原版 ASS 分支保留原有畫法。
+        # ── 底板、局數色塊、橘色側邊、分隔線（整片常駐）
+        # 同一 layer 內依出現順序疊，所以分隔線放最後才會壓在色塊上面
+        for layer, d in [
+            rect(x0, y0, pw, rh * 2, C_PANEL, A_PANEL),                    # 底板
+            rect(gx, y0, gw, rh, C_GAMES_BG, A_CHIP),                      # 局數色塊（上）
+            rect(gx, y0 + rh, gw, rh, C_GAMES_BG, A_CHIP),                 # 局數色塊（下）
+            rect(x0, y0, S(5), rh * 2, c_accent, 0x00),                    # 側邊裝飾條
+            rect(x0, y0 + rh, pw, max(1, S(2)), C_RULE, A_RULE),           # 橫向分隔
+            rect(gx, y0, max(1, S(2)), rh * 2, C_RULE, A_RULE),
+            rect(x0 + S(COL_POINTS_X), y0, max(1, S(2)), rh * 2, C_RULE, A_RULE),
+        ]:
+            add(layer, "Gfx", 0, total, d)
+
+        # ── 選手名（常駐）
+        for i, nm in enumerate(names):
+            add(1, "Nm", 0, total,
+                f"{{\\an4\\pos({name_x},{row_y[i]})\\1c{C_NAME}}}{ass_text(nm)}")
+
+        # ── 局數與該局得分（隨事件變動）：同字級、同字重，靠底色分辨
+        for i, (t, gA, gB, a, b) in enumerate(stamped):
+            end = stamped[i + 1][0] if i + 1 < len(stamped) else total
+            if end - t < 0.02:
+                continue
+            for row, (g, p) in enumerate(((gA, a), (gB, b))):
+                add(2, "Nu", t, end,
+                    f"{{\\an5\\pos({games_cx},{row_y[row]})\\fs{fs}\\b1\\1c{C_GAMES}}}{g}")
+                add(2, "Nu", t, end,
+                    f"{{\\an5\\pos({points_cx},{row_y[row]})\\fs{fs}\\b1\\1c{c_points}}}{p}")
 
     # 片尾統計看板：角落計分板在 total 就結束，看板接著獨占畫面
     if stats and hold > 0:
@@ -755,6 +846,16 @@ def plan(doc, opt):
                 serves=len(serves), points=len(points))
 
 
+def scoreboard_style_for(doc, opt):
+    """新標記保存樣式；沒有 style 的舊標記沿用 ttcut 原版。"""
+    style = (opt.get("scoreboard_style")
+             or (doc.get("scoreboard", {}) or {}).get("style")
+             or "ttcut")
+    if style not in ("ttcut", "koko"):
+        raise ValueError(f"未知比分板樣式：{style}")
+    return style
+
+
 def build_render(doc, plan_d, video, out, opt, ffmpeg, ffprobe, log=print,
                  progress=False):
     """寫出 .ass 與 filter，組出 ffmpeg 指令。回傳 (cmd, workdir, info)。"""
@@ -838,13 +939,15 @@ def build_render(doc, plan_d, video, out, opt, ffmpeg, ffprobe, log=print,
     accent_hex = (opt.get("accent")
                   or (doc.get("scoreboard", {}) or {}).get("accent")
                   or DEFAULT_ACCENT)
+    scoreboard_style = scoreboard_style_for(doc, opt)
 
     with open(os.path.join(workdir, ass_name), "w", encoding="utf-8") as f:
         f.write(build_ass(plan_d["scoring"]["states"], plan_d["src2out"],
                           plan_d["total"], names, w, h,
                           opt.get("font") or FONT_NAME, FONT_NUM,
                           ass_colour(accent_hex),
-                          stats=plan_d["stats"] if hold > 0 else None, hold=hold))
+                          stats=plan_d["stats"] if hold > 0 else None, hold=hold,
+                          scoreboard_style=scoreboard_style))
     fgraph = filter_script(plan_d["keeps"], ass_name, fps_arg, tonemap, hold)
     with open(os.path.join(workdir, flt_name), "w", encoding="utf-8") as f:
         f.write(fgraph)          # 留一份純供除錯查看
@@ -1247,7 +1350,12 @@ HTML = r"""<meta charset="utf-8">
         <option value="every">每局套用</option>
         <option value="first">僅第一局</option>
       </select></div>
-    <div class="grp"><span class="tag">計分板色</span>
+    <div class="grp"><span class="tag">比分板樣式</span>
+      <select id="scoreboardStyle" aria-label="影片比分板樣式">
+        <option value="koko" selected>Koko 彩色表格</option>
+        <option value="ttcut">ttcut 原版</option>
+      </select></div>
+    <div class="grp"><span class="tag">原版／統計強調色</span>
       <input type="color" id="accent" value="#FF7A18"
              title="得分數字與名字左側裝飾條共用這個顏色">
       <button class="btn" id="accentReset" title="回到預設橘色">重設</button></div>
@@ -1415,7 +1523,7 @@ HTML = r"""<meta charset="utf-8">
               points: {A: sp[0], B: sp[1]},
               handicapScope: scope()},
       pads: {tail: num('tailPad', 1), lead: num('leadPad', 0.3)},
-      scoreboard: {accent: $('accent').value},
+      scoreboard: {style: $('scoreboardStyle').value, accent: $('accent').value},
       stats: {enabled: $('stats').checked, hold: num('statsHold', 1)},
       events: events.map(e => ({
         t: +e.t.toFixed(3), frame: frameOf(e.t), type: e.type,
@@ -1965,6 +2073,7 @@ HTML = r"""<meta charset="utf-8">
         $('sgA').value = g.A || 0; $('sgB').value = g.B || 0;
         $('spA').value = p.A || 0; $('spB').value = p.B || 0;
         $('scope').value = S.handicapScope || 'every';
+        $('scoreboardStyle').value = (d.scoreboard || {}).style || 'ttcut';
         $('accent').value = (d.scoreboard || {}).accent || '#FF7A18';
         const SB = d.stats || {};
         $('stats').checked = !!SB.enabled;
@@ -2318,7 +2427,8 @@ def cli_render(args):
                quality=args.quality, encoder=args.encoder, crf=args.crf,
                preset=args.preset, bitrate=args.bitrate, fps=args.fps,
                hdr=args.hdr, size=args.size, hwaccel=args.hwaccel, font=args.font,
-               accent=args.accent, stats=args.stats, stats_hold=args.stats_hold)
+               accent=args.accent, stats=args.stats, stats_hold=args.stats_hold,
+               scoreboard_style=args.scoreboard_style)
 
     pl = plan(doc, opt)
     out = args.out or default_out(args.video)
@@ -2406,6 +2516,8 @@ def main():
     p.add_argument("--accent", default=None,
                    help=f"計分板強調色（得分數字與側邊裝飾條），例如 \"#FF7A18\"。"
                         f"預設 {DEFAULT_ACCENT}")
+    p.add_argument("--scoreboard-style", choices=["koko", "ttcut"], default=None,
+                   help="影片比分板樣式；覆寫標記 JSON。舊 JSON 預設 ttcut 原版")
     p.add_argument("--stats", dest="stats", action="store_true", default=None,
                    help="片尾凍結最後一格並疊上數據統計看板")
     p.add_argument("--no-stats", dest="stats", action="store_false",
