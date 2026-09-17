@@ -60,6 +60,10 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 
 Your tags are saved alongside the output as `<name>.tags.json`, so you can reload and re-render with different settings without tagging again.
 
+### Video scoreboard style
+
+The **Scoreboard style** selector offers **Koko color table** (the default for new tags) and the original **ttcut** board. It affects only the rendered video. The choice is saved as `scoreboard.style` in the tags JSON; older tags without this field continue to use the original board. Koko uses two fixed rows in the lower left: a wide dark name cell, a blue `#19559B` games cell, and a green `#14703F` points cell. Names shrink within their cell when needed; numeric cells keep their size. The video board has no server marker. For command-line renders, `--scoreboard-style koko|ttcut` overrides the JSON choice.
+
 ### Keyboard
 
 | Key | Action | Key | Action |
