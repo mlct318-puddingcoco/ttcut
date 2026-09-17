@@ -10,11 +10,15 @@ assert.match(html, /id="leadPad" value="0\.8"/);
 assert.match(html, /id="minCut" value="2\.5"/);
 assert.match(html, /id="scoreboardStyle"[^>]*>[\s\S]*?<option value="koko" selected>/);
 assert.match(html, /<option value="ttcut">ttcut 原版<\/option>/);
+assert.match(html, /<option value="high" selected>標準<\/option>/);
+assert.match(html, /極致（CPU，非常慢）/);
+for (const id of ['newMatch', 'saveAs', 'introEnabled', 'thumbnail', 'exit'])
+  assert.match(html, new RegExp(`id="${id}"`));
 
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, docPayload, tick };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,roi,rallyCandidates,rallyDiagnostics,video}), clearMatch, docPayload, optPayload, tick };\n})();';
 
 const nodes = new Map();
 function node(id) {
@@ -36,7 +40,7 @@ const context = {document, addEventListener() {}, setTimeout() {}, clearTimeout(
 vm.runInNewContext(script, context);
 
 const video = {currentTime: 0, duration: 300, paused: false,
-  pause() { this.paused = true; }};
+  pause() { this.paused = true; }, remove() { this.removed = true; }};
 context.testUI.setVideo(video);
 node('scoreboardStyle').value = 'koko';
 assert.equal(context.testUI.docPayload().scoreboard.style, 'koko');
@@ -101,4 +105,32 @@ node('stream').listeners.click({target: target({'.ev': {dataset: {i: '0'}}})});
 assert.equal(video.currentTime, 88.25, 'event row seeks to event time');
 assert.equal(node('tc').textContent, '01:28.25');
 assert.equal(context.testUI.events().length, 1);
+node('quality').value = 'max';
+node('scoreboardStyle').value = 'koko';
+node('tailPad').value = '2.0'; node('leadPad').value = '0.8';
+node('minCut').value = '2.5';
+node('introEnabled').checked = true; node('introDuration').value = '3.0';
+node('intro1').value = '城市盃';
+node('sgA').value = '2'; node('spA').value = '8';
+node('nameA').value = '舊選手';
+context.testUI.setSource('/old.mp4', '/custom/old.mp4');
+context.testUI.setRoi({x:0,y:0,w:1,h:1});
+context.testUI.setCandidates([candidate]);
+context.testUI.clearMatch();
+assert.equal(context.testUI.events().length, 0);
+assert.equal(context.testUI.state().srcPath, '');
+assert.equal(context.testUI.state().outPath, '');
+assert.equal(context.testUI.state().roi, null);
+assert.equal(context.testUI.state().rallyCandidates.length, 0);
+assert.equal(context.testUI.state().video, null);
+assert.equal(node('sgA').value, '0'); assert.equal(node('spA').value, '0');
+assert.equal(node('nameA').value, '選手 A');
+assert.equal(node('quality').value, 'max');
+assert.equal(node('scoreboardStyle').value, 'koko');
+assert.equal(node('tailPad').value, '2.0');
+assert.equal(node('leadPad').value, '0.8');
+assert.equal(node('minCut').value, '2.5');
+assert.equal(context.testUI.optPayload().intro.duration, 3);
+assert.equal(context.testUI.optPayload().intro.enabled, true);
+assert.equal(context.testUI.optPayload().intro.lines[0], '');
 console.log('UI interaction checks passed');
