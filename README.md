@@ -4,7 +4,7 @@ Turn raw table tennis footage into a tight, scored match video — cuts the ball
 
 **English** · [繁體中文](README.zh-TW.md)
 
-One Python file. No install, no account, no upload. Your video never leaves your machine.
+No account or upload. Your video never leaves your machine.
 
 <img width="1905" height="934" alt="ttcut demo" src="https://github.com/user-attachments/assets/54aef9c3-1198-4d8e-90f7-29a79757e5ff" />
 
@@ -56,9 +56,11 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 2. Type the two player names and pick who serves first.
 3. Play, and tag: `S` the instant the ball leaves the bat on a serve, `A` or `B` when the point is won.
 4. Tick **Stats board** if you want the summary card at the end.
-5. **Render video.** The output lands next to your source as `<name>.cut.mp4`.
+5. **Render video.** Standard quality is recommended. The CPU based maximum quality option is much slower.
+6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
+7. The output lands next to your source. With all six structured intro fields filled, the suggested name is `<tournament>_<category>_<player A>(<school A>)VS<player B>(<school B>).mp4`, even when the intro is disabled. Otherwise it falls back to `<source>.cut.mp4`. **Save As…** starts with the suggested name and lets you choose a folder or edit it; that choice stays fixed as you edit the intro. Automatic output adds `_2`, `_3`, and so on when a matching MP4 exists.
 
-Your tags are saved alongside the output as `<name>.tags.json`, so you can reload and re-render with different settings without tagging again.
+Your tags are saved alongside the output as `<output basename>.tags.json`. The optional thumbnail is `<output basename>.thumbnail.jpg`. **New match** clears the previous video's markers and score while keeping export preferences; **Exit ttcut** stops the local server. Ctrl-C remains available.
 
 ### Video scoreboard style
 

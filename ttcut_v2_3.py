@@ -64,6 +64,9 @@ import argparse, json, mimetypes, os, platform, re, shutil, socket, unicodedata
 import subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
+from intro_card import (FONT_PREFERENCES, installed_families, select_font, intro_duration,
+                        intro_ass, intro_has_text, with_intro_filter, thumbnail_command, thumbnail_path,
+                        font_directory)
 
 try:
     from rally_detection import DetectionError, detect_video
@@ -660,13 +663,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 # ─────────────────────────────────────────── ffmpeg
 
 def find_ffmpeg(explicit, *hint_dirs):
-    """依序找 ffmpeg：指定路徑 → PATH → 腳本／影片旁邊 → Windows 常見安裝位置。"""
+    """Prefer the macOS libass build, then use the existing search order."""
     exe = "ffmpeg.exe" if IS_WIN else "ffmpeg"
     if explicit:
         p = os.path.abspath(explicit)
         if os.path.isdir(p):
             p = os.path.join(p, exe)
         return p if os.path.isfile(p) else None
+    if IS_MAC:
+        full = "/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg"
+        if os.path.isfile(full):
+            return full
     found = shutil.which("ffmpeg")
     if found:
         return found
@@ -949,6 +956,20 @@ def build_render(doc, plan_d, video, out, opt, ffmpeg, ffprobe, log=print,
                           stats=plan_d["stats"] if hold > 0 else None, hold=hold,
                           scoreboard_style=scoreboard_style))
     fgraph = filter_script(plan_d["keeps"], ass_name, fps_arg, tonemap, hold)
+    intro = opt.get("intro") if opt.get("intro") is not None else doc.get("intro")
+    intro = intro or {}
+    intro_seconds = 0.0
+    if intro.get("enabled"):
+        intro_seconds = intro_duration(intro.get("duration", 3.0),
+                                       info.get("duration") if info else None)
+        intro_name = os.path.basename(stem) + ".intro.ass"
+        font = select_font(intro.get("font", ""))
+        with open(os.path.join(workdir, intro_name), "w", encoding="utf-8") as f:
+            f.write(intro_ass(intro, w, h,
+                              intro_seconds, font))
+        fgraph = with_intro_filter(fgraph, intro_name, fps_arg, intro_seconds,
+                                   font_directory(font), ass_name,
+                                   font_directory(opt.get("font") or FONT_NAME))
     with open(os.path.join(workdir, flt_name), "w", encoding="utf-8") as f:
         f.write(fgraph)          # 留一份純供除錯查看
 
@@ -964,7 +985,7 @@ def build_render(doc, plan_d, video, out, opt, ffmpeg, ffprobe, log=print,
            *(["-hwaccel", hw] if hw != "none" else []),
            "-to", f"{plan_d['keeps'][-1][1] + 1:.3f}", "-i", os.path.abspath(video),
            "-filter_complex", fgraph,
-           "-map", "[vout]", "-map", "[ac]",
+           "-map", "[vout]", "-map", "[aout]" if intro_seconds else "[ac]",
            *video_encoder_args(enc, crf, preset, bitrate, pix_fmt, sw_bitrate),
            *colour_tags, *tag,
            "-c:a", "aac", "-b:a", "256k",
@@ -1033,10 +1054,38 @@ def native_pick_video():
         return None
 
 
+def native_save_video(default_path):
+    """Return a chosen MP4 path, or None when the native dialog is cancelled."""
+    try:
+        if IS_MAC:
+            folder = os.path.dirname(default_path).replace('\\', '\\\\').replace('"', '\\"')
+            name = os.path.basename(default_path).replace('\\', '\\\\').replace('"', '\\"')
+            script = (f'POSIX path of (choose file name with prompt "另存成片" '
+                      f'default name "{name}" default location POSIX file "{folder}/")')
+            result = subprocess.run(["osascript", "-e", script],
+                                    capture_output=True, text=True, timeout=300)
+            path = result.stdout.strip() if result.returncode == 0 else ""
+        else:
+            code = ("import tkinter as tk,tkinter.filedialog as fd\n"
+                    "r=tk.Tk();r.withdraw();r.attributes('-topmost',True)\n"
+                    "print(fd.asksaveasfilename(title='另存成片',defaultextension='.mp4',"
+                    "filetypes=[('MP4','*.mp4')],initialdir=" + repr(os.path.dirname(default_path))
+                    + ",initialfile=" + repr(os.path.basename(default_path)) + "))")
+            result = subprocess.run([sys.executable, "-c", code],
+                                    capture_output=True, text=True, timeout=300)
+            path = result.stdout.strip() if result.returncode == 0 else ""
+        if not path:
+            return None
+        return path if path.lower().endswith(".mp4") else path + ".mp4"
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────── 伺服器狀態
 
 STATE = {
     "video": None,          # 目前載入的影片絕對路徑
+    "custom_out": None,     # 本場比賽手動選擇的另存為路徑
     "ffmpeg": None,
     "ffprobe": "ffprobe",
     "job": None,            # 進行中的渲染
@@ -1055,6 +1104,7 @@ class Job:
         self.proc = None
         self.started = time.time()
         self.speed = ""
+        self.thumbnail = None
 
     def snapshot(self):
         el = time.time() - self.started
@@ -1062,7 +1112,7 @@ class Job:
         if self.state == "running" and self.pct > 2:
             eta = el * (100 - self.pct) / self.pct
         return dict(state=self.state, pct=round(self.pct, 1),
-                    message=self.message, out=self.out,
+                    message=self.message, out=self.out, thumbnail=self.thumbnail,
                     elapsed=round(el), eta=round(eta) if eta else None,
                     speed=self.speed, log=self.log[-12:])
 
@@ -1070,7 +1120,7 @@ class Job:
 _TIME_RE = re.compile(r"out_time=(\d+):(\d\d):(\d\d(?:\.\d+)?)")
 
 
-def run_job(job, cmd, workdir):
+def run_job(job, cmd, workdir, thumbnail_cmd=None):
     """跑 ffmpeg 並解析 -progress 輸出。在背景執行緒中執行。"""
     try:
         job.proc = subprocess.Popen(
@@ -1110,6 +1160,13 @@ def run_job(job, cmd, workdir):
         job.message = "已取消"
         return
     if job.proc.returncode == 0:
+        if thumbnail_cmd:
+            thumb = subprocess.run(thumbnail_cmd, cwd=workdir,
+                                   capture_output=True, text=True)
+            if thumb.returncode:
+                job.state, job.message = "error", "影片完成，但封面產生失敗"
+                job.log = thumb.stderr.splitlines()[-12:]
+                return
         job.state, job.pct, job.message = "done", 100.0, "完成"
     else:
         job.state = "error"
@@ -1305,12 +1362,27 @@ HTML = r"""<meta charset="utf-8">
     max-height:76px;overflow-y:auto;line-height:1.55;white-space:pre-wrap;word-break:break-all}
   .plog.bad{color:var(--bad)}
   .note{font-size:11px;color:var(--warn);line-height:1.5}
+  .intro-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:9px;margin-top:10px}
+  .intro-field{display:flex;flex-direction:column;gap:4px;min-width:0;color:var(--ink);font-size:12px}
+  .intro-field.full{grid-column:1/-1}
+  .intro-field input,.intro-legacy input,#introFont{
+    width:100%;min-width:0;background:#071C32;border:1px solid #6085A6;
+    border-radius:4px;padding:8px 9px;color:#F7FAFD;font-family:var(--body);font-size:16px;
+    -webkit-text-fill-color:#F7FAFD;opacity:1}
+  .intro-field input::placeholder,.intro-legacy input::placeholder,#introFont::placeholder{color:#A9BCD0;opacity:1}
+  .intro-field input:focus,.intro-legacy input:focus,#introFont:focus{
+    border-color:var(--ball);outline:2px solid var(--ball);outline-offset:1px}
+  .intro-legacy{display:grid;gap:7px;margin-top:10px}
+  .intro-legacy[hidden],.intro-fields[hidden],#introAutofill[hidden]{display:none}
+  .intro-legacy p{margin:0;color:var(--ink-dim);font-size:12px;line-height:1.45}
+  #introAutofill{margin-top:8px}
 
   @media (max-width:960px){
     .shell{grid-template-columns:1fr;grid-template-rows:auto auto auto 1fr;height:auto}
     .rail{border-left:0;border-top:1px solid var(--line-soft)}
     .stage{height:54vh}
   }
+  @media (max-width:520px){.intro-fields{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){*{transition:none !important}}
 </style>
 
@@ -1318,6 +1390,7 @@ HTML = r"""<meta charset="utf-8">
   <header>
     <div class="brand"><i></i>ttcut<small>__VERSION__</small></div>
     <button class="btn" id="pick">載入影片</button>
+    <button class="btn" id="newMatch">新增比賽</button>
     <span class="srcname" id="srcname">尚未載入</span>
     <div class="ctl">A<input type="text" id="nameA" value="選手 A"></div>
     <div class="ctl">B<input type="text" id="nameB" value="選手 B"></div>
@@ -1325,6 +1398,7 @@ HTML = r"""<meta charset="utf-8">
     <span style="flex:1"></span>
     <label class="btn file">讀入標記<input type="file" id="load" accept=".json"></label>
     <button class="btn" id="save">匯出 JSON</button>
+    <button class="btn" id="exit">結束 ttcut</button>
   </header>
 
   <div class="setbar">
@@ -1454,7 +1528,7 @@ HTML = r"""<meta charset="utf-8">
         <select id="quality">
           <option value="fast">快</option>
           <option value="high" selected>標準</option>
-          <option value="max">最好（慢）</option>
+          <option value="max">極致（CPU，非常慢）</option>
         </select>
         <label class="ctl" style="margin-left:auto"><input type="checkbox" id="cutLets">重發也剪</label>
       </div>
@@ -1463,6 +1537,32 @@ HTML = r"""<meta charset="utf-8">
         <div class="ctl" style="margin-left:auto">片尾停留<input type="number"
              id="statsHold" value="1.0" step="0.5" min="0.2" max="30">s</div>
       </div>
+      <div class="line" style="line-height:1.4">標準建議用於一般成片；極致採 CPU 編碼，適合保存版，會慢很多。</div>
+      <details id="introBox" style="padding:6px 0">
+        <summary>片頭與 YouTube 封面</summary>
+        <div class="line"><label class="ctl"><input type="checkbox" id="introEnabled">加入片頭</label>
+          <label class="ctl">長度 <input type="number" id="introDuration" value="3.0" min="0.1" max="30" step="0.1" style="width:65px"> 秒</label></div>
+        <div class="line"><label class="ctl"><input type="checkbox" id="thumbnail">同時輸出 YouTube 封面</label></div>
+        <label class="intro-field">片頭字體風格：書法風<input id="introFont" list="introFonts" placeholder="自動選擇；可填已安裝字體"><datalist id="introFonts"></datalist></label>
+        <div class="intro-fields" id="introFields">
+          <label class="intro-field full">賽事名稱<input id="introTournament" placeholder="例如：北港媽祖盃全國桌球錦標賽"></label>
+          <label class="intro-field full">組別<input id="introCategory" placeholder="例如：國小男童一年級以下單打賽"></label>
+          <label class="intro-field">選手 A<input id="introPlayerA" placeholder="許宸愷"></label>
+          <label class="intro-field">選手 B<input id="introPlayerB" placeholder="曾柏誠"></label>
+          <label class="intro-field">學校 A<input id="introSchoolA" placeholder="光復國小"></label>
+          <label class="intro-field">學校 B<input id="introSchoolB" placeholder="吉林國小"></label>
+        </div>
+        <button class="btn" id="introAutofill" type="button">從選手資料帶入</button>
+        <div class="intro-legacy" id="introLegacy" hidden>
+          <p>舊版片頭保留原本四行排版。若要改成選手與學校對齊，請按「改用新版欄位」。</p>
+          <label class="intro-field">舊版第 1 行<input id="intro1"></label>
+          <label class="intro-field">舊版第 2 行<input id="intro2"></label>
+          <label class="intro-field">舊版第 3 行<input id="intro3"></label>
+          <label class="intro-field">舊版第 4 行<input id="intro4"></label>
+          <button class="btn" id="introModernize" type="button">改用新版欄位</button>
+        </div>
+      </details>
+      <div class="line"><button class="btn" id="saveAs" disabled>另存為…</button><button class="btn" id="defaultOut" disabled>使用預設位置</button></div>
       <div class="out" id="outPath">—</div>
       <button class="btn hot go" id="go" disabled>製作成片</button>
       <div id="progWrap" hidden>
@@ -1482,9 +1582,11 @@ HTML = r"""<meta charset="utf-8">
   const screenEl = $('screen'), emptyEl = $('empty');
 
   let video = null, events = [], srcName = '', srcPath = '';
-  let outPath = '', ffmpegOK = false, polling = null;
+  let outPath = '', customOutput = false, outputSuggestionSeq = 0;
+  let ffmpegOK = false, polling = null;
   let rallyCandidates = [], rallyDiagnostics = null, rallyBusy = false;
   let roi = null, roiSelecting = false, roiDrag = null;
+  let matchSerial = 0;
 
   const num = (id, d) => { const v = +$(id).value; return isFinite(v) ? v : d; };
   const fps    = () => Math.max(1, num('fps', 30));
@@ -1525,31 +1627,182 @@ HTML = r"""<meta charset="utf-8">
       pads: {tail: num('tailPad', 1), lead: num('leadPad', 0.3)},
       scoreboard: {style: $('scoreboardStyle').value, accent: $('accent').value},
       stats: {enabled: $('stats').checked, hold: num('statsHold', 1)},
+      intro: introPayload(),
       events: events.map(e => ({
         t: +e.t.toFixed(3), frame: frameOf(e.t), type: e.type,
         ...(e.winner === undefined ? {} : {winner: e.winner})
       }))
     };
   }
+  const introIds = ['introTournament','introCategory','introPlayerA','introSchoolA',
+                    'introPlayerB','introSchoolB'];
+  const introKeys = ['tournament','category','playerA','schoolA','playerB','schoolB'];
+  let legacyIntro = false;
+  function introMode(legacy) {
+    legacyIntro = legacy;
+    $('introFields').hidden = legacy;
+    $('introAutofill').hidden = legacy;
+    $('introLegacy').hidden = !legacy;
+  }
+  function loadIntro(data) {
+    introIds.forEach(id => $(id).value = '');
+    [1,2,3,4].forEach(i => $('intro'+i).value = '');
+    const hasFields = introKeys.some(k => Object.prototype.hasOwnProperty.call(data, k));
+    if (hasFields) {
+      introKeys.forEach((k,i) => $(introIds[i]).value = data[k] || '');
+      introMode(false);
+      return;
+    }
+    const lines = (data.lines || []).slice(0,4);
+    if (lines.length) {
+      const matchup = (lines[2] || '').match(/^\s*(.+?)\s+VS\s+(.+?)\s*$/i);
+      const schools = (lines[3] || '').match(/^\s*(.+?)\s{2,}(.+?)\s*$/);
+      if (matchup && schools) {
+        [lines[0],lines[1],matchup[1],schools[1],matchup[2],schools[2]]
+          .forEach((value,i) => $(introIds[i]).value = (value || '').trim());
+        introMode(false);
+      } else {
+        lines.forEach((line,i) => $('intro'+(i+1)).value = line);
+        introMode(true);
+      }
+    } else introMode(false);
+  }
+  const introPayload = () => {
+    const base = {enabled: $('introEnabled').checked,
+      duration: num('introDuration', 3), thumbnail: $('thumbnail').checked,
+      font: $('introFont').value.trim()};
+    if (legacyIntro) return {...base, lines: [1,2,3,4].map(i => $('intro'+i).value.trim())};
+    introKeys.forEach((k,i) => base[k] = $(introIds[i]).value.trim());
+    return base;
+  };
+  const safeFilenamePart = value => String(value || '')
+    .replace(/[\/\\:*?"<>|]|\p{Cc}|\p{Cf}/gu, '_')
+    .replace(/_+/g, '_').replace(/^[\s._]+|[\s._]+$/g, '');
+  function introFilename(intro) {
+    const parts = introKeys.map(key => safeFilenamePart(intro[key]));
+    if (parts.some(part => !/[\p{L}\p{N}]/u.test(part))) return null;
+    const [event, category, playerA, schoolA, playerB, schoolB] = parts;
+    return `${event}_${category}_${playerA}(${schoolA})VS${playerB}(${schoolB})`
+      .replace(/_+/g, '_').replace(/^[\s._]+|[\s._]+$/g, '') + '.mp4';
+  }
+  function updateOutputSuggestion() {
+    const seq = ++outputSuggestionSeq;
+    if (!srcPath || customOutput) return;
+    const name = introFilename(introPayload()) ||
+      srcPath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') + '.cut.mp4';
+    const slash = Math.max(srcPath.lastIndexOf('/'), srcPath.lastIndexOf('\\'));
+    outPath = srcPath.slice(0, slash + 1) + name;
+    $('outPath').textContent = outPath;
+    fetch('/suggest-output', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({intro:introPayload()})})
+      .then(r => r.json()).then(d => {
+        if (seq !== outputSuggestionSeq || customOutput || !d.path) return;
+        outPath = d.path; $('outPath').textContent = outPath;
+      }).catch(() => {});
+  }
+  introIds.concat(['intro1','intro2','intro3','intro4']).forEach(id =>
+    $(id).addEventListener('input', updateOutputSuggestion));
+  $('introModernize').addEventListener('click', () => {
+    if (!confirm('舊版對戰與學校無法可靠拆分。改用新版欄位後，請重新填寫兩位選手與學校；確定繼續？')) return;
+    $('introTournament').value = $('intro1').value;
+    $('introCategory').value = $('intro2').value;
+    introMode(false);
+    updateOutputSuggestion();
+  });
+  $('introAutofill').addEventListener('click', () => {
+    for (const side of ['A','B']) {
+      const label = $('name'+side).value.trim();
+      const m = label.match(/^(.+?)\s*[（(]([^()（）]+)[)）]\s*$/);
+      if (m) {
+        $('introPlayer'+side).value = m[1].trim();
+        $('introSchool'+side).value = m[2].trim();
+      } else if (label && label !== '選手 '+side && !/[()（）]/.test(label)) {
+        $('introPlayer'+side).value = label;
+      }
+    }
+    updateOutputSuggestion();
+  });
   const optPayload = () => ({
     min_cut: num('minCut', 2), cut_lets: $('cutLets').checked,
     quality: $('quality').value,
-    stats: $('stats').checked, stats_hold: num('statsHold', 1)
+    stats: $('stats').checked, stats_hold: num('statsHold', 1),
+    intro: introPayload()
+  });
+
+  function clearMatch() {
+    matchSerial++; seq++;
+    if (video) { video.pause(); video.remove(); video = null; }
+    srcPath = ''; srcName = ''; outPath = ''; customOutput = false;
+    outputSuggestionSeq++; events = [];
+    roi = null; roiSelecting = false; roiDrag = null;
+    rallyCandidates = []; rallyDiagnostics = null; rallyBusy = false;
+    $('nameA').value = '選手 A'; $('nameB').value = '選手 B';
+    $('firstServer').value = '0';
+    $('target').value = '11'; $('deuce').value = 'standard'; $('cap').value = '12';
+    ['sgA','sgB','spA','spB'].forEach(id => $(id).value = '0');
+    loadIntro({});
+    $('scope').value = 'every'; $('fps').value = '30';
+    $('srcname').textContent = '尚未載入'; $('srcname').title = '';
+    $('outPath').textContent = '—'; $('scrub').value = '0'; $('scrub').max = '0';
+    $('tc').textContent = '00:00.00'; $('frameno').textContent = 'frame 0';
+    $('progWrap').hidden = true; $('plog').hidden = true; $('statbox').hidden = true;
+    emptyEl.style.display = ''; $('roiLayer').style.display = 'none';
+    $('rallyBox').open = false; paintRoi(); paintRallies();
+    $('saveAs').disabled = true; $('defaultOut').disabled = true;
+    banner(null); refresh(); updateGo(false);
+  }
+
+  $('newMatch').addEventListener('click', async () => {
+    if (polling) { banner('請等成片完成再新增比賽。'); return; }
+    if (events.length && !confirm('目前標記尚未匯出 JSON。確定新增比賽並清除標記？')) return;
+    const r = await fetch('/new-match', {method:'POST'});
+    const d = await r.json();
+    if (!r.ok) { banner(d.error); return; }
+    clearMatch();
+  });
+
+  $('saveAs').addEventListener('click', async () => {
+    const r = await fetch('/save-as', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({intro:introPayload()})});
+    const d = await r.json();
+    if (!r.ok) return banner(d.error);
+    if (d.path) {
+      customOutput = true; outputSuggestionSeq++;
+      outPath = d.path; $('outPath').textContent = outPath;
+    }
+  });
+  $('defaultOut').addEventListener('click', async () => {
+    if (!srcPath) return;
+    const r = await fetch('/default-output', {method:'POST'});
+    if (!r.ok) return banner((await r.json()).error);
+    customOutput = false; updateOutputSuggestion();
+  });
+  $('exit').addEventListener('click', async () => {
+    if (polling) { banner('請等成片完成再結束。'); return; }
+    const r = await fetch('/exit', {method:'POST'});
+    const d = await r.json();
+    if (!r.ok) return banner(d.error);
+    document.body.innerHTML = '<main style="padding:40px;font:20px system-ui">ttcut 已結束，可以關閉此頁面。</main>';
+    window.close();
   });
 
   /* ───────────────────────── 影片 */
   $('pick').addEventListener('click', async () => {
+    if (polling) { banner('請等成片完成再更換影片。'); return; }
+    if (events.length && !confirm('切換影片會清除目前標記。確定繼續？')) return;
     $('pick').disabled = true;
     try {
       const r = await fetch('/pick-video', {method: 'POST'});
       const d = await r.json();
       if (d.cancelled || !d.path) return;
+      clearMatch();
       srcPath = d.path; srcName = d.name; outPath = d.defaultOut;
-      roi = null; rallyCandidates = []; rallyDiagnostics = null;
-      paintRoi(); paintRallies();
       $('srcname').textContent = d.name;
       $('srcname').title = d.path;
       $('outPath').textContent = d.defaultOut;
+      $('saveAs').disabled = false; $('defaultOut').disabled = false;
+      updateOutputSuggestion();
       if (d.info) {
         if (d.info.fps) $('fps').value = Math.round(d.info.fps * 100) / 100;
         $('srcname').title = `${d.path}\n${d.info.w}×${d.info.h} · ${d.info.fps}fps · ${d.info.codec}`;
@@ -1754,6 +2007,7 @@ HTML = r"""<meta charset="utf-8">
 
   $('detectRallies').addEventListener('click', async () => {
     if (!srcPath || !roi || rallyBusy) return;
+    const serial = matchSerial;
     rallyBusy = true; updateGo(); $('rallyBox').open = true;
     $('rallyNote').textContent = '正在分析 ROI 影像；音訊只作輔助，長影片需要稍等一下…';
     try {
@@ -1762,6 +2016,7 @@ HTML = r"""<meta charset="utf-8">
         body: JSON.stringify({roi, duration: video && video.duration})
       });
       const d = await r.json();
+      if (serial !== matchSerial) return;
       if (!r.ok) throw new Error(d.error || '分析失敗');
       rallyCandidates = d.candidates || []; rallyDiagnostics = d.diagnostics || null;
       paintRallies();
@@ -1769,9 +2024,10 @@ HTML = r"""<meta charset="utf-8">
         ? `找到 ${rallyCandidates.length} 個視覺候選。點區間預覽；只有按「確認發球」才會加入事件。`
         : '這個 ROI 沒有找到足夠明確的視覺候選；請重選更貼近本桌與兩位選手的範圍。';
     } catch (e) {
+      if (serial !== matchSerial) return;
       $('rallyNote').textContent = '回合分析失敗：' + e.message + '。原本的手動標記功能不受影響。';
     } finally {
-      rallyBusy = false; updateGo();
+      if (serial === matchSerial) { rallyBusy = false; updateGo(); }
     }
   });
 
@@ -1979,10 +2235,12 @@ HTML = r"""<meta charset="utf-8">
     try {
       const r = await fetch('/render', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({doc: docPayload(), opt: optPayload(), out: outPath})
+        body: JSON.stringify({doc: docPayload(), opt: optPayload(),
+          out: outPath, customOutput})
       });
       const d = await r.json();
       if (d.error) { fail(d.error); return; }
+      if (d.out) { outPath = d.out; $('outPath').textContent = outPath; }
       if (d.notes && d.notes.length) {
         $('plog').hidden = false; $('plog').textContent = d.notes.join('\n');
       }
@@ -2016,7 +2274,9 @@ HTML = r"""<meta charset="utf-8">
             setBar(100, '耗時 ' + mmss(s.elapsed));
             $('bar').classList.add('done');
             $('plog').hidden = false;
-            $('plog').textContent = '完成 → ' + s.out;
+            $('plog').textContent = '完成 → ' + s.out +
+              (s.thumbnail ? '\nYouTube 封面 → ' + s.thumbnail : '');
+            if (!customOutput) updateOutputSuggestion();
           } else if (s.state === 'cancelled') {
             setBar(s.pct, '已取消');
           } else {
@@ -2078,6 +2338,14 @@ HTML = r"""<meta charset="utf-8">
         const SB = d.stats || {};
         $('stats').checked = !!SB.enabled;
         if (SB.hold) $('statsHold').value = SB.hold;
+        if (d.intro) {
+          $('introEnabled').checked = !!d.intro.enabled;
+          $('introDuration').value = d.intro.duration || 3;
+          $('thumbnail').checked = !!d.intro.thumbnail;
+          $('introFont').value = d.intro.font || '';
+          loadIntro(d.intro);
+          updateOutputSuggestion();
+        }
         paintAccent();
         refresh();
       } catch (err) {
@@ -2093,11 +2361,18 @@ HTML = r"""<meta charset="utf-8">
     try {
       const s = await (await fetch('/state')).json();
       ffmpegOK = !!s.ffmpeg;
+      $('introFonts').innerHTML = (s.introFonts || []).map(f =>
+        '<option value="' + f.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '"></option>').join('');
       if (s.video) {
         srcPath = s.video; srcName = s.videoName;
+        customOutput = !!s.customOut;
+        outPath = s.customOut || srcPath.replace(/\.[^.]+$/, '') + '.cut.mp4';
+        $('outPath').textContent = outPath;
+        $('saveAs').disabled = false; $('defaultOut').disabled = false;
         $('srcname').textContent = s.videoName;
         $('srcname').title = s.video;
         mountVideo();
+        if (!customOutput) updateOutputSuggestion();
       }
       if (!s.ffmpeg) banner('找不到 ffmpeg，可以標記與匯出 JSON，但無法產出成片。');
       if (s.job && s.job.state === 'running') { $('progWrap').hidden = false; startPolling(); }
@@ -2156,10 +2431,13 @@ class Handler(BaseHTTPRequestHandler):
             with STATE_LOCK:
                 v = STATE["video"]
                 job = STATE["job"]
+                custom_out = STATE["custom_out"]
             return self._json(dict(
                 video=v, videoName=os.path.basename(v) if v else None,
+                customOut=custom_out,
                 ffmpeg=STATE["ffmpeg"],
-                job=job.snapshot() if job else None))
+                job=job.snapshot() if job else None,
+                introFonts=[f for f in FONT_PREFERENCES if f in installed_families()]))
         if p == "/render/status":
             with STATE_LOCK:
                 job = STATE["job"]
@@ -2186,6 +2464,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._detect_rallies()
             if p == "/pick-video":
                 return self._pick()
+            if p == "/save-as":
+                return self._save_as()
+            if p == "/default-output":
+                return self._default_output()
+            if p == "/suggest-output":
+                return self._suggest_output()
+            if p == "/new-match":
+                return self._new_match()
+            if p == "/exit":
+                return self._exit()
             if p == "/render":
                 return self._render()
             if p == "/render/cancel":
@@ -2301,11 +2589,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── 原生檔案對話框
     def _pick(self):
+        with STATE_LOCK:
+            if STATE["job"] and STATE["job"].state == "running":
+                return self._json(dict(error="請等成片完成，再開啟另一支影片。"), 409)
         p = native_pick_video()
         if not p:
             return self._json(dict(cancelled=True))
         with STATE_LOCK:
             STATE["video"] = p
+            STATE["custom_out"] = None
         info = probe(p, STATE["ffprobe"])
         return self._json(dict(
             path=p, name=os.path.basename(p),
@@ -2313,6 +2605,49 @@ class Handler(BaseHTTPRequestHandler):
                       codec=info["codec"], duration=info["duration"],
                       bitrate=info["bitrate"]) if info else None,
             defaultOut=default_out(p)))
+
+    def _save_as(self):
+        with STATE_LOCK:
+            video = STATE["video"]
+        if not video:
+            return self._json(dict(error="請先載入影片。"), 400)
+        intro = (self._body().get("intro") or {})
+        path = native_save_video(default_out(video, intro))
+        if path:
+            with STATE_LOCK:
+                STATE["custom_out"] = path
+        return self._json(dict(path=path, cancelled=not bool(path)))
+
+    def _default_output(self):
+        with STATE_LOCK:
+            STATE["custom_out"] = None
+        return self._json(dict(ok=True))
+
+    def _suggest_output(self):
+        with STATE_LOCK:
+            video = STATE["video"]
+        if not video:
+            return self._json(dict(error="請先載入影片。"), 400)
+        intro = (self._body().get("intro") or {})
+        return self._json(dict(path=unique_default_out(video, intro)))
+
+    def _new_match(self):
+        with STATE_LOCK:
+            if STATE["job"] and STATE["job"].state == "running":
+                return self._json(dict(error="請等成片完成，再新增比賽。"), 409)
+            STATE["video"] = None
+            STATE["job"] = None
+            STATE["custom_out"] = None
+        return self._json(dict(ok=True))
+
+    def _exit(self):
+        if self.client_address[0] != "127.0.0.1":
+            return self._json(dict(error="local only"), 403)
+        with STATE_LOCK:
+            if STATE["job"] and STATE["job"].state == "running":
+                return self._json(dict(error="請等成片完成再結束，或回到終端機按 Ctrl-C。"), 409)
+        self._json(dict(ok=True))
+        threading.Thread(target=self.server.shutdown, daemon=True).start()
 
     # ── 渲染
     def _render(self):
@@ -2330,8 +2665,19 @@ class Handler(BaseHTTPRequestHandler):
         req = self._body()
         doc = req.get("doc") or {}
         opt = req.get("opt") or {}
-        out = req.get("out") or default_out(video)
+        naming_intro = opt.get("intro") if opt.get("intro") is not None else doc.get("intro")
+        custom_output = bool(req.get("customOutput"))
+        out = (req.get("out") if custom_output else
+               unique_default_out(video, naming_intro))
+        if custom_output and not out:
+            return self._json(dict(error="請先選擇輸出位置。"), 400)
         out = os.path.abspath(out)
+        if os.path.splitext(out)[1].lower() != ".mp4":
+            return self._json(dict(error="輸出檔名需以 .mp4 結尾。"), 400)
+        if os.path.realpath(out) == os.path.realpath(video):
+            return self._json(dict(error="不能覆蓋原始影片。"), 400)
+        if not os.path.isdir(os.path.dirname(out)):
+            return self._json(dict(error="輸出資料夾不存在。"), 400)
 
         pl = plan(doc, opt)
         if not pl["ok"]:
@@ -2349,13 +2695,27 @@ class Handler(BaseHTTPRequestHandler):
         cmd, workdir, _ = build_render(doc, pl, video, out, opt, ffmpeg,
                                        STATE["ffprobe"], log=logs.append,
                                        progress=True)
-        new = Job(out, pl["total"] + pl.get("hold", 0.0))
+        intro = opt.get("intro") if opt.get("intro") is not None else doc.get("intro")
+        intro = intro or {}
+        if intro.get("enabled") and not intro_has_text(intro):
+            return self._json(dict(error="請先填寫至少一行片頭文字。"), 400)
+        intro_seconds = (intro_duration(intro.get("duration", 3.0),
+                         (probe(video, STATE["ffprobe"]) or {}).get("duration"))
+                         if intro.get("enabled") else 0.0)
+        thumbnail_cmd = None
+        if intro_seconds and intro.get("thumbnail"):
+            thumbnail_cmd = thumbnail_command(ffmpeg, video, out,
+                             os.path.basename(os.path.splitext(out)[0]) + ".intro.ass",
+                             font_directory(select_font(intro.get("font", ""))))
+        new = Job(out, pl["total"] + pl.get("hold", 0.0) + intro_seconds)
+        new.thumbnail = thumbnail_path(out) if thumbnail_cmd else None
         new.log = logs
         with STATE_LOCK:
             STATE["job"] = new
-        threading.Thread(target=run_job, args=(new, cmd, workdir),
+        threading.Thread(target=run_job, args=(new, cmd, workdir, thumbnail_cmd),
                          daemon=True).start()
-        return self._json(dict(ok=True, out=out, total=round(pl["total"], 1),
+        return self._json(dict(ok=True, out=out, thumbnail=thumbnail_path(out) if thumbnail_cmd else None,
+                               total=round(pl["total"] + intro_seconds, 1),
                                summary=summary_lines(pl, opt, video), notes=logs))
 
     def _cancel(self):
@@ -2370,9 +2730,41 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(dict(ok=True))
 
 
-def default_out(video):
-    return os.path.join(os.path.dirname(os.path.abspath(video)),
-                        os.path.splitext(os.path.basename(video))[0] + ".cut.mp4")
+def safe_filename_part(value):
+    """Keep Chinese and normal punctuation; replace only unsafe filename characters."""
+    value = ''.join('_' if ch in '/\\:*?"<>|' or
+                    unicodedata.category(ch) in ('Cc', 'Cf') else ch
+                    for ch in str(value or ''))
+    return re.sub(r'^[\s._]+|[\s._]+$', '', re.sub(r'_+', '_', value))
+
+
+def intro_filename(intro):
+    """Return a complete structured title filename, or None for partial/legacy data."""
+    keys = ("tournament", "category", "playerA", "schoolA", "playerB", "schoolB")
+    parts = [safe_filename_part(intro.get(key)) for key in keys]
+    if not all(re.search(r'[^\W_]', part, re.UNICODE) for part in parts):
+        return None
+    tournament, category, player_a, school_a, player_b, school_b = parts
+    stem = f"{tournament}_{category}_{player_a}({school_a})VS{player_b}({school_b})"
+    return re.sub(r'^[\s._]+|[\s._]+$', '', re.sub(r'_+', '_', stem)) + ".mp4"
+
+
+def default_out(video, intro=None):
+    intro = intro or {}
+    name = intro_filename(intro)
+    if name is None:
+        name = os.path.splitext(os.path.basename(video))[0] + ".cut.mp4"
+    return os.path.join(os.path.dirname(os.path.abspath(video)), name)
+
+
+def unique_default_out(video, intro=None):
+    path = default_out(video, intro)
+    stem, ext = os.path.splitext(path)
+    number = 2
+    while os.path.exists(path):
+        path = f"{stem}_{number}{ext}"
+        number += 1
+    return path
 
 
 def free_port(preferred=8770):
@@ -2416,6 +2808,8 @@ def serve(open_browser=True, port=None, ffmpeg_hint=None):
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n結束。")
+    finally:
+        httpd.server_close()
 
 
 # ─────────────────────────────────────────── 命令列渲染（與 V1.22 行為相同）
@@ -2431,7 +2825,7 @@ def cli_render(args):
                scoreboard_style=args.scoreboard_style)
 
     pl = plan(doc, opt)
-    out = args.out or default_out(args.video)
+    out = args.out or unique_default_out(args.video, doc.get("intro"))
 
     print(f"\nttcut {VERSION}")
     if not pl["ok"]:
@@ -2471,6 +2865,13 @@ def cli_render(args):
     print("\n" + " ".join(
         (c if len(c) < 60 else f"<濾鏡 {len(c)} 字元，見 {flt}>") for c in cmd) + "\n")
     subprocess.run(cmd, check=True, cwd=workdir)
+    intro = doc.get("intro") or {}
+    if intro.get("enabled") and intro.get("thumbnail"):
+        ass_name = os.path.basename(os.path.splitext(out)[0]) + ".intro.ass"
+        font = select_font(intro.get("font", ""))
+        subprocess.run(thumbnail_command(ffmpeg, args.video, out, ass_name,
+                                         font_directory(font)), check=True, cwd=workdir)
+        print(f"YouTube 封面 → {thumbnail_path(out)}")
     print(f"\n完成 → {out}")
 
 
@@ -2496,7 +2897,7 @@ def main():
 
     g = p.add_argument_group("畫質")
     g.add_argument("--quality", choices=list(QUALITY), default="high",
-                   help="fast=快、high=預設、max=最好（走 libx264 CRF，慢很多）")
+                   help="fast=快、high=標準（建議）、max=極致（CPU libx264，非常慢）")
     g.add_argument("--encoder", default=None,
                    help="Mac: h264_videotoolbox / Windows: h264_nvenc, h264_qsv, "
                         "h264_amf / libx264（純 CPU，最好也最慢）")
