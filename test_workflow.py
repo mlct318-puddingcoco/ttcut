@@ -1,5 +1,6 @@
 """Workflow regression checks: opening card, paths, fonts, and local actions."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,8 @@ from unittest.mock import patch
 from intro_card import (SAMPLE_LINES, intro_ass, intro_has_text, intro_duration, select_font,
                         thumbnail_command, thumbnail_path, with_intro_filter)
 from ttcut_v2_3 import (Handler, STATE, STATE_LOCK, QUALITY, build_render,
-                        default_out, filter_script, plan)
+                        default_out, filter_script, intro_filename, plan,
+                        safe_filename_part, unique_default_out)
 
 
 DOC = {"players": {"A": "甲", "B": "乙"},
@@ -19,6 +21,8 @@ SAMPLE_INTRO = {"tournament": "北港媽祖盃全國桌球錦標賽",
                 "category": "國小男童一年級以下單打賽",
                 "playerA": "許宸愷", "schoolA": "光復國小",
                 "playerB": "曾柏誠", "schoolB": "吉林國小"}
+EXPECTED_NAME = ("北港媽祖盃全國桌球錦標賽_國小男童一年級以下單打賽_"
+                 "許宸愷(光復國小)VS曾柏誠(吉林國小).mp4")
 
 
 class IntroTests(unittest.TestCase):
@@ -111,6 +115,27 @@ class IntroTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    def test_structured_filename_fallback_sanitization_and_duplicates(self):
+        self.assertEqual(intro_filename(SAMPLE_INTRO), EXPECTED_NAME)
+        self.assertEqual(intro_filename(dict(SAMPLE_INTRO, enabled=False)), EXPECTED_NAME)
+        self.assertEqual(intro_filename(dict(SAMPLE_INTRO, schoolB="")), None)
+        self.assertEqual(intro_filename(dict(SAMPLE_INTRO, schoolB="()")), None)
+        self.assertEqual(intro_filename({"lines": SAMPLE_LINES}), None)
+        self.assertEqual(safe_filename_part('  ._賽/\\:*?"<>|\x00\x1f\x7f\u202e事__._  '), '賽_事')
+        self.assertEqual(safe_filename_part('臺灣，公開賽(VS)'), '臺灣，公開賽(VS)')
+        with tempfile.TemporaryDirectory() as tmp:
+            video = str(Path(tmp) / 'raw.MOV')
+            self.assertEqual(default_out(video, SAMPLE_INTRO), str(Path(tmp) / EXPECTED_NAME))
+            self.assertEqual(default_out(video, dict(SAMPLE_INTRO, playerA='')),
+                             str(Path(tmp) / 'raw.cut.mp4'))
+            base = Path(default_out(video, SAMPLE_INTRO))
+            base.touch()
+            self.assertEqual(unique_default_out(video, SAMPLE_INTRO),
+                             str(base.with_name(base.stem + '_2.mp4')))
+            base.with_name(base.stem + '_2.mp4').touch()
+            self.assertEqual(unique_default_out(video, SAMPLE_INTRO),
+                             str(base.with_name(base.stem + '_3.mp4')))
+
     def test_save_as_reset_and_exit_are_local_post_actions(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = str(Path(tmp) / "source.mp4")
@@ -124,6 +149,7 @@ class ActionTests(unittest.TestCase):
                                "Origin": "http://127.0.0.1:8770"}
             handler.client_address = ("127.0.0.1", 1000)
             handler.server = type("Server", (), {"shutdown": lambda self: None})()
+            handler._body = lambda: {"intro": SAMPLE_INTRO}
             with STATE_LOCK:
                 previous = dict(STATE)
                 STATE["video"] = source
@@ -132,17 +158,76 @@ class ActionTests(unittest.TestCase):
                 handler.path = "/exit"
                 handler.do_GET()
                 self.assertEqual(seen[-1][0], 404)
-                with patch("ttcut_v2_3.native_save_video", return_value=chosen):
+                with patch("ttcut_v2_3.native_save_video", return_value=chosen) as save:
                     handler.path = "/save-as"
                     handler.do_POST()
                     self.assertEqual(seen[-1], (200, {"path": chosen, "cancelled": False}))
+                    save.assert_called_once_with(str(Path(tmp) / EXPECTED_NAME))
+                    self.assertEqual(STATE['custom_out'], chosen)
+                with patch('ttcut_v2_3.installed_families', return_value=set()):
+                    handler.path = '/state'
+                    handler.do_GET()
+                self.assertEqual(seen[-1][1]['customOut'], chosen)
+                handler.path = '/default-output'
+                handler.do_POST()
+                self.assertIsNone(STATE['custom_out'])
+                handler.path = "/suggest-output"
+                handler.do_POST()
+                self.assertEqual(seen[-1][1]["path"], str(Path(tmp) / EXPECTED_NAME))
+                with patch("ttcut_v2_3.native_save_video", return_value=chosen):
+                    handler.path = '/save-as'
+                    handler.do_POST()
                 handler.path = "/new-match"
                 handler.do_POST()
                 self.assertEqual(seen[-1][0], 200)
                 self.assertIsNone(STATE["video"])
+                self.assertIsNone(STATE['custom_out'])
                 handler.path = "/exit"
                 handler.do_POST()
                 self.assertEqual(seen[-1][0], 200)
+            finally:
+                with STATE_LOCK:
+                    STATE.update(previous)
+
+    def test_render_uses_available_default_and_sidecar_basename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = str(Path(tmp) / 'raw.MOV')
+            Path(source).write_bytes(b'video')
+            base = Path(tmp) / EXPECTED_NAME
+            base.touch()
+            base.with_name(base.stem + '_2.mp4').touch()
+            intro = dict(SAMPLE_INTRO, enabled=True, thumbnail=True, duration=3)
+            doc = dict(DOC, intro=intro)
+            handler = Handler.__new__(Handler)
+            seen = []
+            handler._json = lambda obj, code=200: seen.append((code, obj))
+            handler._body = lambda: {'doc': doc, 'opt': {'intro': intro},
+                                     'out': str(base), 'customOutput': False}
+            with STATE_LOCK:
+                previous = dict(STATE)
+                STATE.update(video=source, ffmpeg='ffmpeg', ffprobe='ffprobe', job=None)
+            try:
+                with patch('ttcut_v2_3.build_render', return_value=([], tmp, None)), \
+                     patch('ttcut_v2_3.probe', return_value={'duration': 6}), \
+                     patch('ttcut_v2_3.threading.Thread') as thread:
+                    handler._render()
+                    thread.return_value.start.assert_called_once()
+                chosen = str(base.with_name(base.stem + '_3.mp4'))
+                self.assertEqual(seen[-1][1]['out'], chosen)
+                self.assertEqual(seen[-1][1]['thumbnail'], thumbnail_path(chosen))
+                tags = Path(chosen.removesuffix('.mp4') + '.tags.json')
+                self.assertTrue(tags.exists())
+                self.assertEqual(json.loads(tags.read_text())['intro']['tournament'],
+                                 SAMPLE_INTRO['tournament'])
+                with STATE_LOCK:
+                    STATE['job'].state = 'done'
+                handler._body = lambda: {'doc': doc, 'opt': {'intro': intro},
+                                         'out': str(base), 'customOutput': True}
+                with patch('ttcut_v2_3.build_render', return_value=([], tmp, None)), \
+                     patch('ttcut_v2_3.probe', return_value={'duration': 6}), \
+                     patch('ttcut_v2_3.threading.Thread'):
+                    handler._render()
+                self.assertEqual(seen[-1][1]['out'], str(base))
             finally:
                 with STATE_LOCK:
                     STATE.update(previous)

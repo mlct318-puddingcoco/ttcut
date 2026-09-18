@@ -58,7 +58,7 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 4. Tick **Stats board** if you want the summary card at the end.
 5. **Render video.** Standard quality is recommended. The CPU based maximum quality option is much slower.
 6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
-7. The output lands next to your source as `<name>.cut.mp4`, or use **Save As…** to choose a folder and name.
+7. The output lands next to your source. With all six structured intro fields filled, the suggested name is `<tournament>_<category>_<player A>(<school A>)VS<player B>(<school B>).mp4`, even when the intro is disabled. Otherwise it falls back to `<source>.cut.mp4`. **Save As…** starts with the suggested name and lets you choose a folder or edit it; that choice stays fixed as you edit the intro. Automatic output adds `_2`, `_3`, and so on when a matching MP4 exists.
 
 Your tags are saved alongside the output as `<output basename>.tags.json`. The optional thumbnail is `<output basename>.thumbnail.jpg`. **New match** clears the previous video's markers and score while keeping export preferences; **Exit ttcut** stops the local server. Ctrl-C remains available.
 

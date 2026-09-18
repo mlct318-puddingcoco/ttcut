@@ -25,7 +25,7 @@ assert.match(html, /\.intro-field input:focus[\s\S]*border-color:var\(--ball\)/)
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,roi,rallyCandidates,rallyDiagnostics,video}), clearMatch, docPayload, optPayload, loadIntro, tick };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, tick };\n})();';
 
 const nodes = new Map();
 function node(id) {
@@ -160,4 +160,53 @@ assert.equal(node('introPlayerA').value, '許宸愷');
 assert.equal(node('introSchoolA').value, '光復國小');
 assert.equal(node('introPlayerB').value, '曾柏誠');
 assert.equal(node('introSchoolB').value, '吉林國小');
-console.log('UI interaction checks passed');
+
+(async () => {
+  const exact = '北港媽祖盃全國桌球錦標賽_國小男童一年級以下單打賽_許宸愷(光復國小)VS曾柏誠(吉林國小).mp4';
+  assert.equal(context.testUI.safeFilenamePart(' ._賽/\\:*?"<>|\x00\x1f\x7f\u202e事__._ '), '賽_事');
+  assert.equal(context.testUI.introFilename({tournament:'賽事'}), null);
+  assert.equal(context.testUI.introFilename({...Object.fromEntries(
+    [['tournament','賽事'],['category','組別'],['playerA','甲'],['schoolA','()'],
+     ['playerB','乙'],['schoolB','學校']])}), null);
+  let calls = [];
+  let suggestedName = exact;
+  context.fetch = async (url, options) => {
+    calls.push({url, body: options.body && JSON.parse(options.body)});
+    if (url === '/suggest-output') return {json: async () => ({path: '/matches/' + suggestedName})};
+    if (url === '/save-as') return {ok: true, json: async () => ({path: '/chosen/custom.mp4'})};
+    throw Error('unexpected fetch: ' + url);
+  };
+  context.testUI.setSource('/matches/raw.MOV', '/matches/raw.cut.mp4');
+  const fields = {introTournament:'北港媽祖盃全國桌球錦標賽',
+    introCategory:'國小男童一年級以下單打賽', introPlayerA:'許宸愷',
+    introSchoolA:'光復國小', introPlayerB:'曾柏誠', introSchoolB:'吉林國小'};
+  for (const [id, value] of Object.entries(fields)) node(id).value = value;
+  node('introEnabled').checked = false;
+  node('introSchoolB').listeners.input();
+  assert.equal(context.testUI.state().outPath, '/matches/' + exact);
+  assert.equal(node('outPath').textContent, '/matches/' + exact);
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(calls.at(-1).url, '/suggest-output');
+  assert.equal(calls.at(-1).body.intro.enabled, false);
+  suggestedName = exact.replace(/\.mp4$/, '_2.mp4');
+  node('introSchoolB').listeners.input();
+  await new Promise(setImmediate);
+  assert.equal(context.testUI.state().outPath, '/matches/' + suggestedName);
+  await node('saveAs').listeners.click();
+  assert.equal(calls.at(-1).url, '/save-as');
+  assert.equal(calls.at(-1).body.intro.schoolB, '吉林國小');
+  assert.equal(context.testUI.state().outPath, '/chosen/custom.mp4');
+  assert.equal(context.testUI.state().customOutput, true);
+  const before = calls.length;
+  node('introTournament').value = '新賽事';
+  node('introTournament').listeners.input();
+  assert.equal(context.testUI.state().outPath, '/chosen/custom.mp4');
+  assert.equal(calls.length, before);
+  context.testUI.clearMatch();
+  assert.equal(context.testUI.state().customOutput, false);
+  assert.equal(context.testUI.state().outPath, '');
+  context.testUI.setSource('/matches/raw.MOV', '/matches/raw.cut.mp4');
+  node('introTournament').listeners.input();
+  assert.equal(context.testUI.state().outPath, '/matches/raw.cut.mp4');
+  console.log('UI interaction checks passed');
+})().catch(err => { console.error(err); process.exitCode = 1; });

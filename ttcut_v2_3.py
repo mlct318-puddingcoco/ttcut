@@ -1085,6 +1085,7 @@ def native_save_video(default_path):
 
 STATE = {
     "video": None,          # 目前載入的影片絕對路徑
+    "custom_out": None,     # 本場比賽手動選擇的另存為路徑
     "ffmpeg": None,
     "ffprobe": "ffprobe",
     "job": None,            # 進行中的渲染
@@ -1581,7 +1582,8 @@ HTML = r"""<meta charset="utf-8">
   const screenEl = $('screen'), emptyEl = $('empty');
 
   let video = null, events = [], srcName = '', srcPath = '';
-  let outPath = '', ffmpegOK = false, polling = null;
+  let outPath = '', customOutput = false, outputSuggestionSeq = 0;
+  let ffmpegOK = false, polling = null;
   let rallyCandidates = [], rallyDiagnostics = null, rallyBusy = false;
   let roi = null, roiSelecting = false, roiDrag = null;
   let matchSerial = 0;
@@ -1673,11 +1675,39 @@ HTML = r"""<meta charset="utf-8">
     introKeys.forEach((k,i) => base[k] = $(introIds[i]).value.trim());
     return base;
   };
+  const safeFilenamePart = value => String(value || '')
+    .replace(/[\/\\:*?"<>|]|\p{Cc}|\p{Cf}/gu, '_')
+    .replace(/_+/g, '_').replace(/^[\s._]+|[\s._]+$/g, '');
+  function introFilename(intro) {
+    const parts = introKeys.map(key => safeFilenamePart(intro[key]));
+    if (parts.some(part => !/[\p{L}\p{N}]/u.test(part))) return null;
+    const [event, category, playerA, schoolA, playerB, schoolB] = parts;
+    return `${event}_${category}_${playerA}(${schoolA})VS${playerB}(${schoolB})`
+      .replace(/_+/g, '_').replace(/^[\s._]+|[\s._]+$/g, '') + '.mp4';
+  }
+  function updateOutputSuggestion() {
+    const seq = ++outputSuggestionSeq;
+    if (!srcPath || customOutput) return;
+    const name = introFilename(introPayload()) ||
+      srcPath.split(/[\\/]/).pop().replace(/\.[^.]+$/, '') + '.cut.mp4';
+    const slash = Math.max(srcPath.lastIndexOf('/'), srcPath.lastIndexOf('\\'));
+    outPath = srcPath.slice(0, slash + 1) + name;
+    $('outPath').textContent = outPath;
+    fetch('/suggest-output', {method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({intro:introPayload()})})
+      .then(r => r.json()).then(d => {
+        if (seq !== outputSuggestionSeq || customOutput || !d.path) return;
+        outPath = d.path; $('outPath').textContent = outPath;
+      }).catch(() => {});
+  }
+  introIds.concat(['intro1','intro2','intro3','intro4']).forEach(id =>
+    $(id).addEventListener('input', updateOutputSuggestion));
   $('introModernize').addEventListener('click', () => {
     if (!confirm('舊版對戰與學校無法可靠拆分。改用新版欄位後，請重新填寫兩位選手與學校；確定繼續？')) return;
     $('introTournament').value = $('intro1').value;
     $('introCategory').value = $('intro2').value;
     introMode(false);
+    updateOutputSuggestion();
   });
   $('introAutofill').addEventListener('click', () => {
     for (const side of ['A','B']) {
@@ -1690,6 +1720,7 @@ HTML = r"""<meta charset="utf-8">
         $('introPlayer'+side).value = label;
       }
     }
+    updateOutputSuggestion();
   });
   const optPayload = () => ({
     min_cut: num('minCut', 2), cut_lets: $('cutLets').checked,
@@ -1701,7 +1732,8 @@ HTML = r"""<meta charset="utf-8">
   function clearMatch() {
     matchSerial++; seq++;
     if (video) { video.pause(); video.remove(); video = null; }
-    srcPath = ''; srcName = ''; outPath = ''; events = [];
+    srcPath = ''; srcName = ''; outPath = ''; customOutput = false;
+    outputSuggestionSeq++; events = [];
     roi = null; roiSelecting = false; roiDrag = null;
     rallyCandidates = []; rallyDiagnostics = null; rallyBusy = false;
     $('nameA').value = '選手 A'; $('nameB').value = '選手 B';
@@ -1730,15 +1762,21 @@ HTML = r"""<meta charset="utf-8">
   });
 
   $('saveAs').addEventListener('click', async () => {
-    const r = await fetch('/save-as', {method:'POST'});
+    const r = await fetch('/save-as', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({intro:introPayload()})});
     const d = await r.json();
     if (!r.ok) return banner(d.error);
-    if (d.path) { outPath = d.path; $('outPath').textContent = outPath; }
+    if (d.path) {
+      customOutput = true; outputSuggestionSeq++;
+      outPath = d.path; $('outPath').textContent = outPath;
+    }
   });
-  $('defaultOut').addEventListener('click', () => {
+  $('defaultOut').addEventListener('click', async () => {
     if (!srcPath) return;
-    outPath = srcPath.replace(/\.[^.]+$/, '') + '.cut.mp4';
-    $('outPath').textContent = outPath;
+    const r = await fetch('/default-output', {method:'POST'});
+    if (!r.ok) return banner((await r.json()).error);
+    customOutput = false; updateOutputSuggestion();
   });
   $('exit').addEventListener('click', async () => {
     if (polling) { banner('請等成片完成再結束。'); return; }
@@ -1764,6 +1802,7 @@ HTML = r"""<meta charset="utf-8">
       $('srcname').title = d.path;
       $('outPath').textContent = d.defaultOut;
       $('saveAs').disabled = false; $('defaultOut').disabled = false;
+      updateOutputSuggestion();
       if (d.info) {
         if (d.info.fps) $('fps').value = Math.round(d.info.fps * 100) / 100;
         $('srcname').title = `${d.path}\n${d.info.w}×${d.info.h} · ${d.info.fps}fps · ${d.info.codec}`;
@@ -2196,10 +2235,12 @@ HTML = r"""<meta charset="utf-8">
     try {
       const r = await fetch('/render', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({doc: docPayload(), opt: optPayload(), out: outPath})
+        body: JSON.stringify({doc: docPayload(), opt: optPayload(),
+          out: outPath, customOutput})
       });
       const d = await r.json();
       if (d.error) { fail(d.error); return; }
+      if (d.out) { outPath = d.out; $('outPath').textContent = outPath; }
       if (d.notes && d.notes.length) {
         $('plog').hidden = false; $('plog').textContent = d.notes.join('\n');
       }
@@ -2235,6 +2276,7 @@ HTML = r"""<meta charset="utf-8">
             $('plog').hidden = false;
             $('plog').textContent = '完成 → ' + s.out +
               (s.thumbnail ? '\nYouTube 封面 → ' + s.thumbnail : '');
+            if (!customOutput) updateOutputSuggestion();
           } else if (s.state === 'cancelled') {
             setBar(s.pct, '已取消');
           } else {
@@ -2302,6 +2344,7 @@ HTML = r"""<meta charset="utf-8">
           $('thumbnail').checked = !!d.intro.thumbnail;
           $('introFont').value = d.intro.font || '';
           loadIntro(d.intro);
+          updateOutputSuggestion();
         }
         paintAccent();
         refresh();
@@ -2322,12 +2365,14 @@ HTML = r"""<meta charset="utf-8">
         '<option value="' + f.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '"></option>').join('');
       if (s.video) {
         srcPath = s.video; srcName = s.videoName;
-        outPath = srcPath.replace(/\.[^.]+$/, '') + '.cut.mp4';
+        customOutput = !!s.customOut;
+        outPath = s.customOut || srcPath.replace(/\.[^.]+$/, '') + '.cut.mp4';
         $('outPath').textContent = outPath;
         $('saveAs').disabled = false; $('defaultOut').disabled = false;
         $('srcname').textContent = s.videoName;
         $('srcname').title = s.video;
         mountVideo();
+        if (!customOutput) updateOutputSuggestion();
       }
       if (!s.ffmpeg) banner('找不到 ffmpeg，可以標記與匯出 JSON，但無法產出成片。');
       if (s.job && s.job.state === 'running') { $('progWrap').hidden = false; startPolling(); }
@@ -2386,8 +2431,10 @@ class Handler(BaseHTTPRequestHandler):
             with STATE_LOCK:
                 v = STATE["video"]
                 job = STATE["job"]
+                custom_out = STATE["custom_out"]
             return self._json(dict(
                 video=v, videoName=os.path.basename(v) if v else None,
+                customOut=custom_out,
                 ffmpeg=STATE["ffmpeg"],
                 job=job.snapshot() if job else None,
                 introFonts=[f for f in FONT_PREFERENCES if f in installed_families()]))
@@ -2419,6 +2466,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._pick()
             if p == "/save-as":
                 return self._save_as()
+            if p == "/default-output":
+                return self._default_output()
+            if p == "/suggest-output":
+                return self._suggest_output()
             if p == "/new-match":
                 return self._new_match()
             if p == "/exit":
@@ -2546,6 +2597,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(dict(cancelled=True))
         with STATE_LOCK:
             STATE["video"] = p
+            STATE["custom_out"] = None
         info = probe(p, STATE["ffprobe"])
         return self._json(dict(
             path=p, name=os.path.basename(p),
@@ -2559,8 +2611,25 @@ class Handler(BaseHTTPRequestHandler):
             video = STATE["video"]
         if not video:
             return self._json(dict(error="請先載入影片。"), 400)
-        path = native_save_video(default_out(video))
+        intro = (self._body().get("intro") or {})
+        path = native_save_video(default_out(video, intro))
+        if path:
+            with STATE_LOCK:
+                STATE["custom_out"] = path
         return self._json(dict(path=path, cancelled=not bool(path)))
+
+    def _default_output(self):
+        with STATE_LOCK:
+            STATE["custom_out"] = None
+        return self._json(dict(ok=True))
+
+    def _suggest_output(self):
+        with STATE_LOCK:
+            video = STATE["video"]
+        if not video:
+            return self._json(dict(error="請先載入影片。"), 400)
+        intro = (self._body().get("intro") or {})
+        return self._json(dict(path=unique_default_out(video, intro)))
 
     def _new_match(self):
         with STATE_LOCK:
@@ -2568,6 +2637,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(dict(error="請等成片完成，再新增比賽。"), 409)
             STATE["video"] = None
             STATE["job"] = None
+            STATE["custom_out"] = None
         return self._json(dict(ok=True))
 
     def _exit(self):
@@ -2595,7 +2665,12 @@ class Handler(BaseHTTPRequestHandler):
         req = self._body()
         doc = req.get("doc") or {}
         opt = req.get("opt") or {}
-        out = req.get("out") or default_out(video)
+        naming_intro = opt.get("intro") if opt.get("intro") is not None else doc.get("intro")
+        custom_output = bool(req.get("customOutput"))
+        out = (req.get("out") if custom_output else
+               unique_default_out(video, naming_intro))
+        if custom_output and not out:
+            return self._json(dict(error="請先選擇輸出位置。"), 400)
         out = os.path.abspath(out)
         if os.path.splitext(out)[1].lower() != ".mp4":
             return self._json(dict(error="輸出檔名需以 .mp4 結尾。"), 400)
@@ -2655,9 +2730,41 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(dict(ok=True))
 
 
-def default_out(video):
-    return os.path.join(os.path.dirname(os.path.abspath(video)),
-                        os.path.splitext(os.path.basename(video))[0] + ".cut.mp4")
+def safe_filename_part(value):
+    """Keep Chinese and normal punctuation; replace only unsafe filename characters."""
+    value = ''.join('_' if ch in '/\\:*?"<>|' or
+                    unicodedata.category(ch) in ('Cc', 'Cf') else ch
+                    for ch in str(value or ''))
+    return re.sub(r'^[\s._]+|[\s._]+$', '', re.sub(r'_+', '_', value))
+
+
+def intro_filename(intro):
+    """Return a complete structured title filename, or None for partial/legacy data."""
+    keys = ("tournament", "category", "playerA", "schoolA", "playerB", "schoolB")
+    parts = [safe_filename_part(intro.get(key)) for key in keys]
+    if not all(re.search(r'[^\W_]', part, re.UNICODE) for part in parts):
+        return None
+    tournament, category, player_a, school_a, player_b, school_b = parts
+    stem = f"{tournament}_{category}_{player_a}({school_a})VS{player_b}({school_b})"
+    return re.sub(r'^[\s._]+|[\s._]+$', '', re.sub(r'_+', '_', stem)) + ".mp4"
+
+
+def default_out(video, intro=None):
+    intro = intro or {}
+    name = intro_filename(intro)
+    if name is None:
+        name = os.path.splitext(os.path.basename(video))[0] + ".cut.mp4"
+    return os.path.join(os.path.dirname(os.path.abspath(video)), name)
+
+
+def unique_default_out(video, intro=None):
+    path = default_out(video, intro)
+    stem, ext = os.path.splitext(path)
+    number = 2
+    while os.path.exists(path):
+        path = f"{stem}_{number}{ext}"
+        number += 1
+    return path
 
 
 def free_port(preferred=8770):
@@ -2718,7 +2825,7 @@ def cli_render(args):
                scoreboard_style=args.scoreboard_style)
 
     pl = plan(doc, opt)
-    out = args.out or default_out(args.video)
+    out = args.out or unique_default_out(args.video, doc.get("intro"))
 
     print(f"\nttcut {VERSION}")
     if not pl["ok"]:
