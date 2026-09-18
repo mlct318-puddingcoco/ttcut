@@ -7,6 +7,7 @@ import subprocess
 FONT_PREFERENCES = ("Xingkai TC", "Kaiti TC", "Songti TC", "PingFang TC")
 SAMPLE_LINES = ("城市盃全國桌球錦標賽", "國小男生二年級團體賽",
                 "許宸愷 VS 曾柏誠", "光復國小    吉林國小")
+INTRO_FIELDS = ("tournament", "category", "playerA", "schoolA", "playerB", "schoolB")
 
 
 def installed_families():
@@ -50,11 +51,25 @@ def ass_time(seconds):
     return f"{cs // 360000}:{(cs // 6000) % 60:02d}:{(cs // 100) % 60:02d}.{cs % 100:02d}"
 
 
-def intro_ass(lines, width, height, duration, font):
-    """Four separately sized centered lines; ASS scales with the video size."""
+def intro_has_text(intro):
+    return any(str(intro.get(k, "")).strip() for k in INTRO_FIELDS) or any(
+        str(v).strip() for v in intro.get("lines", []))
+
+
+def _text_units(value):
+    """Approximate glyph advances for a bounded ASS text box (CJK is one em)."""
+    return sum(1 if ord(ch) > 0x2e80 else .58 for ch in value)
+
+
+def _size_for(value, base, max_width):
+    return min(base, max(28, int(max_width / max(_text_units(value), 1))))
+
+
+def intro_ass(intro, width, height, duration, font):
+    """Resolution-aware title and independent player columns; legacy lines stay visible."""
     scale = min(width / 1920, height / 1080)
-    sizes = (110, 84, 112, 78)
-    ys = (310, 435, 600, 725)
+    structured = isinstance(intro, dict) and any(k in intro for k in INTRO_FIELDS)
+    lines = intro.get("lines", []) if isinstance(intro, dict) else intro
     clean_font = font.replace(",", " ").replace("\n", " ")
     bold = 0 if font in ("BiauKaiTC", "BiauKai", "Kaiti TC") else 1
     header = f"""[Script Info]
@@ -72,15 +87,29 @@ Style: Intro,{clean_font},100,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,{bold}
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     rows = []
-    for i, line in enumerate(list(lines)[:4]):
+    def add(line, x, y, size, max_width):
         safe = re.sub(r"[{}\\\r\n]", " ", str(line)).strip()
         if not safe:
-            continue
-        size = max(16, round(sizes[i] * scale))
-        y = round(ys[i] * height / 1080)
+            return
+        size = max(16, round(_size_for(safe, size, max_width) * scale))
         outline = max(4, round(8 * scale))
         rows.append(f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Intro,,0,0,0,,"
-                    f"{{\\an5\\pos({width//2},{y})\\fs{size}\\bord{outline}\\shad0}}{safe}")
+                    f"{{\\an5\\pos({round(x*width/1920)},{round(y*height/1080)})"
+                    f"\\fs{size}\\bord{outline}\\shad0}}{safe}")
+    if structured:
+        add(intro.get("tournament", ""), 960, 285, 136, 1660)
+        add(intro.get("category", ""), 960, 430, 106, 1660)
+        add(intro.get("playerA", ""), 550, 635, 136, 640)
+        add("VS" if intro.get("playerA") or intro.get("playerB") else "",
+            960, 635, 100, 190)
+        add(intro.get("playerB", ""), 1370, 635, 136, 640)
+        add(intro.get("schoolA", ""), 550, 775, 92, 640)
+        add(intro.get("schoolB", ""), 1370, 775, 92, 640)
+    else:
+        # v1 could contain arbitrary freeform matchup/school lines. Never discard them.
+        for line, y, size in zip(list(lines)[:4], (285, 430, 635, 775),
+                                 (136, 106, 136, 92)):
+            add(line, 960, y, size, 1660)
     return header + "\n".join(rows) + "\n"
 
 

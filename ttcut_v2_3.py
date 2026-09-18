@@ -64,8 +64,8 @@ import argparse, json, mimetypes, os, platform, re, shutil, socket, unicodedata
 import subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
-from intro_card import (FONT_PREFERENCES, SAMPLE_LINES, installed_families, select_font, intro_duration,
-                        intro_ass, with_intro_filter, thumbnail_command, thumbnail_path,
+from intro_card import (FONT_PREFERENCES, installed_families, select_font, intro_duration,
+                        intro_ass, intro_has_text, with_intro_filter, thumbnail_command, thumbnail_path,
                         font_directory)
 
 try:
@@ -965,7 +965,7 @@ def build_render(doc, plan_d, video, out, opt, ffmpeg, ffprobe, log=print,
         intro_name = os.path.basename(stem) + ".intro.ass"
         font = select_font(intro.get("font", ""))
         with open(os.path.join(workdir, intro_name), "w", encoding="utf-8") as f:
-            f.write(intro_ass(intro.get("lines") or SAMPLE_LINES, w, h,
+            f.write(intro_ass(intro, w, h,
                               intro_seconds, font))
         fgraph = with_intro_filter(fgraph, intro_name, fps_arg, intro_seconds,
                                    font_directory(font), ass_name,
@@ -1361,12 +1361,27 @@ HTML = r"""<meta charset="utf-8">
     max-height:76px;overflow-y:auto;line-height:1.55;white-space:pre-wrap;word-break:break-all}
   .plog.bad{color:var(--bad)}
   .note{font-size:11px;color:var(--warn);line-height:1.5}
+  .intro-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:9px;margin-top:10px}
+  .intro-field{display:flex;flex-direction:column;gap:4px;min-width:0;color:var(--ink);font-size:12px}
+  .intro-field.full{grid-column:1/-1}
+  .intro-field input,.intro-legacy input,#introFont{
+    width:100%;min-width:0;background:#071C32;border:1px solid #6085A6;
+    border-radius:4px;padding:8px 9px;color:#F7FAFD;font-family:var(--body);font-size:16px;
+    -webkit-text-fill-color:#F7FAFD;opacity:1}
+  .intro-field input::placeholder,.intro-legacy input::placeholder,#introFont::placeholder{color:#A9BCD0;opacity:1}
+  .intro-field input:focus,.intro-legacy input:focus,#introFont:focus{
+    border-color:var(--ball);outline:2px solid var(--ball);outline-offset:1px}
+  .intro-legacy{display:grid;gap:7px;margin-top:10px}
+  .intro-legacy[hidden],.intro-fields[hidden],#introAutofill[hidden]{display:none}
+  .intro-legacy p{margin:0;color:var(--ink-dim);font-size:12px;line-height:1.45}
+  #introAutofill{margin-top:8px}
 
   @media (max-width:960px){
     .shell{grid-template-columns:1fr;grid-template-rows:auto auto auto 1fr;height:auto}
     .rail{border-left:0;border-top:1px solid var(--line-soft)}
     .stage{height:54vh}
   }
+  @media (max-width:520px){.intro-fields{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){*{transition:none !important}}
 </style>
 
@@ -1527,11 +1542,24 @@ HTML = r"""<meta charset="utf-8">
         <div class="line"><label class="ctl"><input type="checkbox" id="introEnabled">加入片頭</label>
           <label class="ctl">長度 <input type="number" id="introDuration" value="3.0" min="0.1" max="30" step="0.1" style="width:65px"> 秒</label></div>
         <div class="line"><label class="ctl"><input type="checkbox" id="thumbnail">同時輸出 YouTube 封面</label></div>
-        <div class="line"><span>片頭字體風格：書法風</span><input id="introFont" list="introFonts" placeholder="自動選擇；可填已安裝字體" style="min-width:165px"><datalist id="introFonts"></datalist></div>
-        <input id="intro1" aria-label="賽事名稱" placeholder="賽事名稱，例如：城市盃全國桌球錦標賽" style="width:100%">
-        <input id="intro2" aria-label="組別" placeholder="組別，例如：國小男生二年級團體賽" style="width:100%">
-        <input id="intro3" aria-label="對戰組合" placeholder="對戰組合，例如：許宸愷 VS 曾柏誠" style="width:100%">
-        <input id="intro4" aria-label="學校" placeholder="學校，例如：光復國小    吉林國小" style="width:100%">
+        <label class="intro-field">片頭字體風格：書法風<input id="introFont" list="introFonts" placeholder="自動選擇；可填已安裝字體"><datalist id="introFonts"></datalist></label>
+        <div class="intro-fields" id="introFields">
+          <label class="intro-field full">賽事名稱<input id="introTournament" placeholder="例如：北港媽祖盃全國桌球錦標賽"></label>
+          <label class="intro-field full">組別<input id="introCategory" placeholder="例如：國小男童一年級以下單打賽"></label>
+          <label class="intro-field">選手 A<input id="introPlayerA" placeholder="許宸愷"></label>
+          <label class="intro-field">選手 B<input id="introPlayerB" placeholder="曾柏誠"></label>
+          <label class="intro-field">學校 A<input id="introSchoolA" placeholder="光復國小"></label>
+          <label class="intro-field">學校 B<input id="introSchoolB" placeholder="吉林國小"></label>
+        </div>
+        <button class="btn" id="introAutofill" type="button">從選手資料帶入</button>
+        <div class="intro-legacy" id="introLegacy" hidden>
+          <p>舊版片頭保留原本四行排版。若要改成選手與學校對齊，請按「改用新版欄位」。</p>
+          <label class="intro-field">舊版第 1 行<input id="intro1"></label>
+          <label class="intro-field">舊版第 2 行<input id="intro2"></label>
+          <label class="intro-field">舊版第 3 行<input id="intro3"></label>
+          <label class="intro-field">舊版第 4 行<input id="intro4"></label>
+          <button class="btn" id="introModernize" type="button">改用新版欄位</button>
+        </div>
       </details>
       <div class="line"><button class="btn" id="saveAs" disabled>另存為…</button><button class="btn" id="defaultOut" disabled>使用預設位置</button></div>
       <div class="out" id="outPath">—</div>
@@ -1604,10 +1632,65 @@ HTML = r"""<meta charset="utf-8">
       }))
     };
   }
-  const introPayload = () => ({enabled: $('introEnabled').checked,
-    duration: num('introDuration', 3), thumbnail: $('thumbnail').checked,
-    font: $('introFont').value.trim(),
-    lines: [1,2,3,4].map(i => $('intro'+i).value.trim())});
+  const introIds = ['introTournament','introCategory','introPlayerA','introSchoolA',
+                    'introPlayerB','introSchoolB'];
+  const introKeys = ['tournament','category','playerA','schoolA','playerB','schoolB'];
+  let legacyIntro = false;
+  function introMode(legacy) {
+    legacyIntro = legacy;
+    $('introFields').hidden = legacy;
+    $('introAutofill').hidden = legacy;
+    $('introLegacy').hidden = !legacy;
+  }
+  function loadIntro(data) {
+    introIds.forEach(id => $(id).value = '');
+    [1,2,3,4].forEach(i => $('intro'+i).value = '');
+    const hasFields = introKeys.some(k => Object.prototype.hasOwnProperty.call(data, k));
+    if (hasFields) {
+      introKeys.forEach((k,i) => $(introIds[i]).value = data[k] || '');
+      introMode(false);
+      return;
+    }
+    const lines = (data.lines || []).slice(0,4);
+    if (lines.length) {
+      const matchup = (lines[2] || '').match(/^\s*(.+?)\s+VS\s+(.+?)\s*$/i);
+      const schools = (lines[3] || '').match(/^\s*(.+?)\s{2,}(.+?)\s*$/);
+      if (matchup && schools) {
+        [lines[0],lines[1],matchup[1],schools[1],matchup[2],schools[2]]
+          .forEach((value,i) => $(introIds[i]).value = (value || '').trim());
+        introMode(false);
+      } else {
+        lines.forEach((line,i) => $('intro'+(i+1)).value = line);
+        introMode(true);
+      }
+    } else introMode(false);
+  }
+  const introPayload = () => {
+    const base = {enabled: $('introEnabled').checked,
+      duration: num('introDuration', 3), thumbnail: $('thumbnail').checked,
+      font: $('introFont').value.trim()};
+    if (legacyIntro) return {...base, lines: [1,2,3,4].map(i => $('intro'+i).value.trim())};
+    introKeys.forEach((k,i) => base[k] = $(introIds[i]).value.trim());
+    return base;
+  };
+  $('introModernize').addEventListener('click', () => {
+    if (!confirm('舊版對戰與學校無法可靠拆分。改用新版欄位後，請重新填寫兩位選手與學校；確定繼續？')) return;
+    $('introTournament').value = $('intro1').value;
+    $('introCategory').value = $('intro2').value;
+    introMode(false);
+  });
+  $('introAutofill').addEventListener('click', () => {
+    for (const side of ['A','B']) {
+      const label = $('name'+side).value.trim();
+      const m = label.match(/^(.+?)\s*[（(]([^()（）]+)[)）]\s*$/);
+      if (m) {
+        $('introPlayer'+side).value = m[1].trim();
+        $('introSchool'+side).value = m[2].trim();
+      } else if (label && label !== '選手 '+side && !/[()（）]/.test(label)) {
+        $('introPlayer'+side).value = label;
+      }
+    }
+  });
   const optPayload = () => ({
     min_cut: num('minCut', 2), cut_lets: $('cutLets').checked,
     quality: $('quality').value,
@@ -1625,7 +1708,7 @@ HTML = r"""<meta charset="utf-8">
     $('firstServer').value = '0';
     $('target').value = '11'; $('deuce').value = 'standard'; $('cap').value = '12';
     ['sgA','sgB','spA','spB'].forEach(id => $(id).value = '0');
-    [1,2,3,4].forEach(i => $('intro'+i).value = '');
+    loadIntro({});
     $('scope').value = 'every'; $('fps').value = '30';
     $('srcname').textContent = '尚未載入'; $('srcname').title = '';
     $('outPath').textContent = '—'; $('scrub').value = '0'; $('scrub').max = '0';
@@ -2218,7 +2301,7 @@ HTML = r"""<meta charset="utf-8">
           $('introDuration').value = d.intro.duration || 3;
           $('thumbnail').checked = !!d.intro.thumbnail;
           $('introFont').value = d.intro.font || '';
-          (d.intro.lines || []).slice(0,4).forEach((line,i) => $('intro'+(i+1)).value = line);
+          loadIntro(d.intro);
         }
         paintAccent();
         refresh();
@@ -2539,7 +2622,7 @@ class Handler(BaseHTTPRequestHandler):
                                        progress=True)
         intro = opt.get("intro") if opt.get("intro") is not None else doc.get("intro")
         intro = intro or {}
-        if intro.get("enabled") and not any(str(x).strip() for x in intro.get("lines", [])):
+        if intro.get("enabled") and not intro_has_text(intro):
             return self._json(dict(error="請先填寫至少一行片頭文字。"), 400)
         intro_seconds = (intro_duration(intro.get("duration", 3.0),
                          (probe(video, STATE["ffprobe"]) or {}).get("duration"))

@@ -57,7 +57,7 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 3. Play, and tag: `S` the instant the ball leaves the bat on a serve, `A` or `B` when the point is won.
 4. Tick **Stats board** if you want the summary card at the end.
 5. **Render video.** Standard quality is recommended. The CPU based maximum quality option is much slower.
-6. Optionally add a three second title card and a matching 1280×720 YouTube thumbnail.
+6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
 7. The output lands next to your source as `<name>.cut.mp4`, or use **Save As…** to choose a folder and name.
 
 Your tags are saved alongside the output as `<output basename>.tags.json`. The optional thumbnail is `<output basename>.thumbnail.jpg`. **New match** clears the previous video's markers and score while keeping export preferences; **Exit ttcut** stops the local server. Ctrl-C remains available.

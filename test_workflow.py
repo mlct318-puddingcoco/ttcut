@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from intro_card import (SAMPLE_LINES, intro_ass, intro_duration, select_font,
+from intro_card import (SAMPLE_LINES, intro_ass, intro_has_text, intro_duration, select_font,
                         thumbnail_command, thumbnail_path, with_intro_filter)
 from ttcut_v2_3 import (Handler, STATE, STATE_LOCK, QUALITY, build_render,
                         default_out, filter_script, plan)
@@ -15,6 +15,10 @@ DOC = {"players": {"A": "甲", "B": "乙"},
        "scoreboard": {"style": "koko"},
        "events": [{"t": 1, "type": "serve"},
                   {"t": 2, "type": "point", "winner": "A"}]}
+SAMPLE_INTRO = {"tournament": "北港媽祖盃全國桌球錦標賽",
+                "category": "國小男童一年級以下單打賽",
+                "playerA": "許宸愷", "schoolA": "光復國小",
+                "playerB": "曾柏誠", "schoolB": "吉林國小"}
 
 
 class IntroTests(unittest.TestCase):
@@ -26,13 +30,35 @@ class IntroTests(unittest.TestCase):
         self.assertEqual(intro_duration(3, 10), 3)
 
     def test_intro_scales_and_escapes_text(self):
-        small = intro_ass(SAMPLE_LINES, 1920, 1080, 3, "Xingkai TC")
-        large = intro_ass(SAMPLE_LINES, 3840, 2160, 3, "Xingkai TC")
-        self.assertIn(r"\pos(960,310)\fs110\bord8", small)
-        self.assertIn(r"\pos(1920,620)\fs220\bord16", large)
-        self.assertEqual(small.count("Dialogue:"), 4)
+        small = intro_ass(SAMPLE_INTRO, 1920, 1080, 3, "Xingkai TC")
+        large = intro_ass(SAMPLE_INTRO, 3840, 2160, 3, "Xingkai TC")
+        self.assertIn(r"\pos(960,285)\fs136\bord8", small)
+        self.assertIn(r"\pos(1920,570)\fs272\bord16", large)
+        self.assertIn(r"\pos(550,635)\fs136", small)
+        self.assertIn(r"\pos(550,775)\fs92", small)
+        self.assertIn(r"\pos(1370,635)\fs136", small)
+        self.assertIn(r"\pos(1370,775)\fs92", small)
+        self.assertIn(r"\pos(960,635)\fs100", small)
+        self.assertEqual(small.count("Dialogue:"), 7)
+        thumb = intro_ass(SAMPLE_INTRO, 1280, 720, 3, "Xingkai TC")
+        self.assertIn(r"\pos(367,423)\fs91", thumb)
+        self.assertIn(r"\pos(913,423)\fs91", thumb)
+        self.assertIn(r"\pos(367,517)\fs61", thumb)
+        self.assertIn(r"\pos(913,517)\fs61", thumb)
         self.assertIn("0:00:03.00", small)
         self.assertNotIn("{bad}", intro_ass(["{bad}"], 1920, 1080, 3, "Xingkai TC"))
+
+    def test_long_player_shrinks_independently_and_legacy_is_retained(self):
+        intro = dict(SAMPLE_INTRO, playerA="非常非常非常長的選手姓名")
+        ass = intro_ass(intro, 1920, 1080, 3, "Xingkai TC")
+        self.assertIn(r"\pos(1370,635)\fs136", ass)
+        self.assertNotIn(r"\pos(550,635)\fs136", ass)
+        self.assertIn(r"\pos(2740,1270)\fs272", intro_ass(
+            intro, 3840, 2160, 3, "Xingkai TC"))
+        self.assertEqual(intro_ass({"lines": SAMPLE_LINES}, 1920, 1080, 3,
+                                   "Xingkai TC").count("Dialogue:"), 4)
+        self.assertTrue(intro_has_text({"lines": SAMPLE_LINES}))
+        self.assertTrue(intro_has_text(SAMPLE_INTRO))
 
     def test_intro_filter_has_separate_scoreless_segment(self):
         base = filter_script([(0, 4)], "score.ass", "30")
@@ -66,7 +92,7 @@ class IntroTests(unittest.TestCase):
                 on, _, _ = build_render(DOC, pl, "source.mp4", out,
                                         {"quality": "high", "intro": {
                                             "enabled": True, "duration": 3,
-                                            "lines": SAMPLE_LINES}},
+                                            **SAMPLE_INTRO}},
                                         "ffmpeg", "ffprobe", log=lambda _: None)
                 self.assertIn("[aout]", on)
                 self.assertIn("concat=n=2", on[on.index("-filter_complex") + 1])

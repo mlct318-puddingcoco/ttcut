@@ -14,11 +14,18 @@ assert.match(html, /<option value="high" selected>標準<\/option>/);
 assert.match(html, /極致（CPU，非常慢）/);
 for (const id of ['newMatch', 'saveAs', 'introEnabled', 'thumbnail', 'exit'])
   assert.match(html, new RegExp(`id="${id}"`));
+for (const [id, label] of Object.entries({introTournament:'賽事名稱', introCategory:'組別',
+  introPlayerA:'選手 A', introSchoolA:'學校 A', introPlayerB:'選手 B', introSchoolB:'學校 B'}))
+  assert.match(html, new RegExp(`<label class="intro-field[^>]*>${label}<input id="${id}"`));
+assert.match(html, /\.intro-field input,[\s\S]*background:#071C32/);
+assert.match(html, /color:#F7FAFD/);
+assert.match(html, /::placeholder\{color:#A9BCD0/);
+assert.match(html, /\.intro-field input:focus[\s\S]*border-color:var\(--ball\)/);
 
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,roi,rallyCandidates,rallyDiagnostics,video}), clearMatch, docPayload, optPayload, tick };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,roi,rallyCandidates,rallyDiagnostics,video}), clearMatch, docPayload, optPayload, loadIntro, tick };\n})();';
 
 const nodes = new Map();
 function node(id) {
@@ -36,7 +43,7 @@ const document = {
   documentElement: {style: {setProperty() {}}},
 };
 const context = {document, addEventListener() {}, setTimeout() {}, clearTimeout() {},
-  fetch() { throw new Error('unexpected fetch'); }};
+  confirm() { return true; }, fetch() { throw new Error('unexpected fetch'); }};
 vm.runInNewContext(script, context);
 
 const video = {currentTime: 0, duration: 300, paused: false,
@@ -132,5 +139,25 @@ assert.equal(node('leadPad').value, '0.8');
 assert.equal(node('minCut').value, '2.5');
 assert.equal(context.testUI.optPayload().intro.duration, 3);
 assert.equal(context.testUI.optPayload().intro.enabled, true);
-assert.equal(context.testUI.optPayload().intro.lines[0], '');
+assert.equal(context.testUI.optPayload().intro.tournament, '');
+assert.equal(context.testUI.optPayload().intro.playerA, '');
+context.testUI.loadIntro({lines:['城市盃','單打賽','許宸愷 VS 曾柏誠','光復國小    吉林國小']});
+assert.equal(node('introPlayerA').value, '許宸愷');
+assert.equal(node('introSchoolB').value, '吉林國小');
+assert.equal(context.testUI.optPayload().intro.playerB, '曾柏誠');
+context.testUI.loadIntro({lines:['自由標題','組別','無法辨識的對戰','只有一所學校']});
+assert.equal(context.testUI.optPayload().intro.lines[2], '無法辨識的對戰');
+assert.equal(node('introLegacy').hidden, false);
+node('nameA').value = '許宸愷（光復國小）';
+node('nameB').value = '曾柏誠(吉林國小)';
+context.confirm = () => false;
+node('introModernize').listeners.click();
+assert.equal(context.testUI.optPayload().intro.lines[2], '無法辨識的對戰');
+context.confirm = () => true;
+node('introModernize').listeners.click();
+node('introAutofill').listeners.click();
+assert.equal(node('introPlayerA').value, '許宸愷');
+assert.equal(node('introSchoolA').value, '光復國小');
+assert.equal(node('introPlayerB').value, '曾柏誠');
+assert.equal(node('introSchoolB').value, '吉林國小');
 console.log('UI interaction checks passed');
