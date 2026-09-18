@@ -10,7 +10,7 @@ from intro_card import (SAMPLE_LINES, intro_ass, intro_has_text, intro_duration,
                         thumbnail_command, thumbnail_path, with_intro_filter)
 from ttcut_v2_3 import (Handler, STATE, STATE_LOCK, QUALITY, build_render,
                         default_out, filter_script, intro_filename, plan,
-                        safe_filename_part, unique_default_out)
+                        run_job_managed, safe_filename_part, unique_default_out)
 
 
 DOC = {"players": {"A": "甲", "B": "乙"},
@@ -212,6 +212,9 @@ class ActionTests(unittest.TestCase):
                      patch('ttcut_v2_3.threading.Thread') as thread:
                     handler._render()
                     thread.return_value.start.assert_called_once()
+                    args = thread.call_args.kwargs['args']
+                    with patch('ttcut_v2_3.run_job', side_effect=lambda job, *_: setattr(job, 'state', 'done')):
+                        run_job_managed(*args)
                 chosen = str(base.with_name(base.stem + '_3.mp4'))
                 self.assertEqual(seen[-1][1]['out'], chosen)
                 self.assertEqual(seen[-1][1]['thumbnail'], thumbnail_path(chosen))
@@ -225,8 +228,10 @@ class ActionTests(unittest.TestCase):
                                          'out': str(base), 'customOutput': True}
                 with patch('ttcut_v2_3.build_render', return_value=([], tmp, None)), \
                      patch('ttcut_v2_3.probe', return_value={'duration': 6}), \
-                     patch('ttcut_v2_3.threading.Thread'):
+                     patch('ttcut_v2_3.threading.Thread') as thread:
                     handler._render()
+                    args = thread.call_args.kwargs['args']
+                    args[4].cleanup()
                 self.assertEqual(seen[-1][1]['out'], str(base))
             finally:
                 with STATE_LOCK:

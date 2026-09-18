@@ -52,15 +52,17 @@ python3 ttcut_v2_3.py
 
 That starts a local server on `127.0.0.1` and opens your browser. Then:
 
-1. **Load video** — a native file dialog opens (the browser can't hand over a real file path, so Python asks for it).
+1. **Load video** for one recording, or **Load multiple videos…** for consecutive files from the same match. Multi-file selection starts in natural filename order; the file list shows each duration, global start/end, and total length. Use ↑/↓ before tagging to correct the order.
 2. Type the two player names and pick who serves first.
 3. Play, and tag: `S` the instant the ball leaves the bat on a serve, `A` or `B` when the point is won.
 4. Tick **Stats board** if you want the summary card at the end.
 5. **Render video.** Standard quality is recommended. The CPU based maximum quality option is much slower.
 6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
-7. The output lands next to your source. With all six structured intro fields filled, the suggested name is `<tournament>_<category>_<player A>(<school A>)VS<player B>(<school B>).mp4`, even when the intro is disabled. Otherwise it falls back to `<source>.cut.mp4`. **Save As…** starts with the suggested name and lets you choose a folder or edit it; that choice stays fixed as you edit the intro. Automatic output adds `_2`, `_3`, and so on when a matching MP4 exists.
+7. Choose **Output organization**. New matches default to **One folder per match**; **Same folder** retains the previous layout. The suggested name uses all six structured intro fields, `<tournament>_<category>_<player A>(<school A>)VS<player B>(<school B>).mp4`, even when the intro is disabled; otherwise it falls back to `<source>.cut.mp4`. **Save As…** chooses the destination root and basename. Its choice stays fixed as you edit the intro.
 
-Your tags are saved alongside the output as `<output basename>.tags.json`. The optional thumbnail is `<output basename>.thumbnail.jpg`. **New match** clears the previous video's markers and score while keeping export preferences; **Exit ttcut** stops the local server. Ctrl-C remains available.
+With **One folder per match**, output goes to `<root>/<basename>/<basename>.mp4` and `<root>/<basename>/<basename>.thumbnail.jpg`; tags go to `<root>/<basename>/ttcut-data/<basename>.tags.json`. Automatic output uses `_2`, `_3`, and so on when that match folder already exists. **Same folder** keeps the MP4, optional thumbnail, and tags together beside the source or in the Save As destination; automatic output suffixes an existing MP4. The output preview lists all three planned paths. Source recordings stay in their original locations. **New match** clears source segments, markers, score, and custom output path while keeping the organization preference; **Exit ttcut** stops the local server. Ctrl-C remains available.
+
+For multiple files, ttcut shows and saves one continuous clock. Candidate and event times, seeking, and cuts use this global time. Different resolution, frame rate, codec, or audio specs trigger a warning; rendering adjusts segments in one FFmpeg run and leaves no merged source file. If resolution differs, select an ROI for each segment before rally analysis. If the camera framing changes at the same resolution, enable the per-segment ROI option. The tags JSON stores source paths and offsets; reopening reports a missing segment by filename.
 
 ### Video scoreboard style
 

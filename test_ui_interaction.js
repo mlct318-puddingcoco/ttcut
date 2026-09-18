@@ -25,7 +25,7 @@ assert.match(html, /\.intro-field input:focus[\s\S]*border-color:var\(--ball\)/)
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, tick };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = e, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick };\n})();';
 
 const nodes = new Map();
 function node(id) {
@@ -170,9 +170,15 @@ assert.equal(node('introSchoolB').value, '吉林國小');
      ['playerB','乙'],['schoolB','學校']])}), null);
   let calls = [];
   let suggestedName = exact;
+  node('organization').value = 'same-folder';
   context.fetch = async (url, options) => {
     calls.push({url, body: options.body && JSON.parse(options.body)});
-    if (url === '/suggest-output') return {json: async () => ({path: '/matches/' + suggestedName})};
+    if (url === '/suggest-output') {
+      const base = calls.at(-1).body.customOutput ? '/chosen/custom' : '/matches/' + suggestedName.replace(/\.mp4$/, '');
+      const out = base + '.mp4';
+      return {json: async () => ({path: out, layout:{out,
+        thumbnail:base+'.thumbnail.jpg', tags:base+'.tags.json'}})};
+    }
     if (url === '/save-as') return {ok: true, json: async () => ({path: '/chosen/custom.mp4'})};
     throw Error('unexpected fetch: ' + url);
   };
@@ -191,22 +197,57 @@ assert.equal(node('introSchoolB').value, '吉林國小');
   suggestedName = exact.replace(/\.mp4$/, '_2.mp4');
   node('introSchoolB').listeners.input();
   await new Promise(setImmediate);
-  assert.equal(context.testUI.state().outPath, '/matches/' + suggestedName);
+  assert.equal(node('outPath').textContent, '/matches/' + suggestedName);
+  assert.equal(context.testUI.state().outPath, '/matches/' + exact);
   await node('saveAs').listeners.click();
-  assert.equal(calls.at(-1).url, '/save-as');
-  assert.equal(calls.at(-1).body.intro.schoolB, '吉林國小');
+  assert.equal(calls.at(-2).url, '/save-as');
+  assert.equal(calls.at(-2).body.intro.schoolB, '吉林國小');
   assert.equal(context.testUI.state().outPath, '/chosen/custom.mp4');
   assert.equal(context.testUI.state().customOutput, true);
   const before = calls.length;
   node('introTournament').value = '新賽事';
   node('introTournament').listeners.input();
   assert.equal(context.testUI.state().outPath, '/chosen/custom.mp4');
-  assert.equal(calls.length, before);
+  assert.equal(calls.length, before + 1);
   context.testUI.clearMatch();
   assert.equal(context.testUI.state().customOutput, false);
   assert.equal(context.testUI.state().outPath, '');
+  assert.equal(context.testUI.state().sources.length, 0);
   context.testUI.setSource('/matches/raw.MOV', '/matches/raw.cut.mp4');
   node('introTournament').listeners.input();
   assert.equal(context.testUI.state().outPath, '/matches/raw.cut.mp4');
+  node('organization').value = 'match-folder';
+  node('introTournament').listeners.input();
+  assert.equal(node('outPath').textContent, '/matches/raw.cut/raw.cut.mp4');
+  assert.equal(node('tagsPath').textContent,
+    '/matches/raw.cut/ttcut-data/raw.cut.tags.json');
+  const segments = [
+    {path:'/matches/DJI_0015.MP4',duration:2,offset:0,end:2,w:320,h:180,codec:'h264',fps_frac:'30/1',audio:{codec_name:'aac'}},
+    {path:'/matches/DJI_0016.MP4',duration:3,offset:2,end:5,w:320,h:180,codec:'h264',fps_frac:'30/1',audio:{codec_name:'aac'}}
+  ];
+  const multiVideo = {currentTime:0,duration:2,paused:true,clientWidth:0,
+    pause(){this.paused=true;},play(){this.paused=false;return Promise.resolve();},
+    load(){this.loads=(this.loads||0)+1;},remove(){}};
+  context.testUI.setVideo(multiVideo);
+  context.testUI.setSources({sources:segments,geometryMismatch:false});
+  assert.equal(context.testUI.sourceForTime(2).index, 1);
+  assert.equal(context.testUI.sourceForTime(2).local, 0);
+  assert.equal(context.testUI.sourceForTime(3.25).local, 1.25);
+  context.testUI.seekGlobal(2.4);
+  assert.equal(context.testUI.state().activeSegment, 1);
+  assert.ok(Math.abs(context.testUI.state().pendingSeek-.4)<.001);
+  assert.equal(context.testUI.now(), 2.4);
+  assert.match(multiVideo.src, /segment=1/);
+  assert.equal(multiVideo.loads, 1);
+  context.testUI.setEvents([{t:2.7,type:'serve'}]);
+  node('stream').listeners.click({target: target({'.ev': {dataset:{i:'0'}}})});
+  assert.ok(Math.abs(context.testUI.state().pendingSeek-.7)<.001);
+  assert.equal(context.testUI.now(), 2.7);
+  context.testUI.setCandidates([{start:1.8,end:2.2,duration:.4,confidence:.8,
+    confidenceTier:'normal',motionMean:1,motionPeak:2,sideBalance:1}]);
+  clickRally({'[data-rally]': row});
+  assert.equal(context.testUI.state().activeSegment, 0);
+  context.testUI.clearMatch();
+  assert.equal(node('organization').value, 'match-folder');
   console.log('UI interaction checks passed');
 })().catch(err => { console.error(err); process.exitCode = 1; });

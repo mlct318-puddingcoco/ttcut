@@ -127,7 +127,8 @@ def subtitle_filter(name, font_dir=None):
 
 
 def with_intro_filter(match_graph, ass_name, fps, duration, font_dir=None,
-                      score_ass_name=None, score_font_dir=None):
+                      score_ass_name=None, score_font_dir=None,
+                      intro_video="[0:v]", intro_audio="[0:a]"):
     """Place the unscored opener before the existing scored match stream."""
     if score_ass_name and score_font_dir:
         old = subtitle_filter(score_ass_name)
@@ -135,9 +136,9 @@ def with_intro_filter(match_graph, ass_name, fps, duration, font_dir=None,
                                                                score_font_dir))
     match_graph = match_graph.replace("[vout]", "[matchv]")
     return (match_graph + ";"
-            + f"[0:v]trim=duration={duration:.3f},fps={fps},setpts=N/FRAME_RATE/TB,"
+            + f"{intro_video}trim=duration={duration:.3f},fps={fps},setpts=N/FRAME_RATE/TB,"
             + subtitle_filter(ass_name, font_dir) + "[introv];"
-            + f"[0:a]atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[introa];"
+            + f"{intro_audio}atrim=duration={duration:.3f},asetpts=PTS-STARTPTS[introa];"
             + "[introv][introa][matchv][ac]concat=n=2:v=1:a=1[vout][aout]")
 
 
