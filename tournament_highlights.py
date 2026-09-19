@@ -13,7 +13,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from intro_card import font_directory, intro_ass, select_font, subtitle_filter
+from intro_card import (fill_video_filter, fit_video_filter, font_directory,
+                        intro_ass, select_font, subtitle_filter)
 from match_io import make_sources
 
 
@@ -23,8 +24,6 @@ PROJECT_VERSION = 1
 INTRO_SECONDS = 3.0
 COVER_OFFSET_SECONDS = 1.25
 COVER_END_GUARD_SECONDS = 0.05
-COVER_BLUR = "boxblur=6:1"
-COVER_TREATMENT = "eq=brightness=-0.18:saturation=0.90,drawbox=color=black@0.28:t=fill"
 
 
 class TournamentError(ValueError):
@@ -354,32 +353,27 @@ def _write_title_ass(path, metadata, duration, size):
     return font
 
 
-def _cover_video_filter(size, ass_path):
-    font = select_font("")
-    sub = subtitle_filter(os.path.basename(ass_path), font_directory(font))
-    return (f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=increase,"
-            f"crop={size[0]}:{size[1]},{COVER_BLUR},{COVER_TREATMENT},{sub}")
-
-
 def title_command(ffmpeg, out, ass_path, duration, size, fps, quality, encoder,
                   background=None):
+    sub = subtitle_filter(os.path.basename(ass_path),
+                          font_directory(select_font("")))
     if background:
-        args = [ffmpeg, "-y", "-loop", "1", "-framerate", f"{fps}",
-                "-i", os.path.abspath(background)]
-        video_filter = _cover_video_filter(size, ass_path)
+        args = [ffmpeg, "-y", "-i", os.path.abspath(background)]
+        maps = ["-map", "0:v:0", "-map", "0:a:0"]
+        video_filter = fit_video_filter(size[0], size[1]) + "," + sub
     else:
         args = [ffmpeg, "-y", "-f", "lavfi", "-i",
-                f"color=c=#04121F:s={size[0]}x{size[1]}:r={fps}:d={duration}"]
-        video_filter = subtitle_filter(os.path.basename(ass_path),
-                                       font_directory(select_font("")))
-    return [*args, "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={duration}",
-            "-vf", video_filter, "-t", f"{duration:.3f}",
+                f"color=c=#04121F:s={size[0]}x{size[1]}:r={fps}:d={duration}",
+                "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={duration}"]
+        maps = ["-map", "0:v:0", "-map", "1:a:0"]
+        video_filter = sub
+    return [*args, *maps, "-vf", video_filter, "-t", f"{duration:.3f}",
             *_encoder_args(quality, encoder), "-c:a", "aac", "-b:a", "256k",
             "-shortest", "-movflags", "+faststart", out]
 
 
-def cover_frame_selection(plan):
-    """Resolve the first selected review item to one original source/local time."""
+def intro_background_selection(plan, duration=INTRO_SECONDS):
+    """Plan a moving intro from the first selected item in current review order."""
     for match in plan.get("matches", []):
         if not match.get("highlights"):
             continue
@@ -387,32 +381,75 @@ def cover_frame_selection(plan):
         if "start" not in item or "end" not in item:
             return None
         start, end = float(item["start"]), float(item["end"])
-        global_time = min(start + COVER_OFFSET_SECONDS,
-                          max(start, end - COVER_END_GUARD_SECONDS))
         sources = match.get("source_info") or []
-        for index, source in enumerate(sources):
-            if "offset" not in source or "end" not in source:
-                continue
-            is_last = index == len(sources) - 1
-            if source["offset"] <= global_time < source["end"] or (
-                    is_last and source["offset"] <= global_time <= source["end"]):
-                return dict(match=match, item=item, source=source,
-                            source_index=index, global_time=global_time,
-                            local_time=max(0.0, global_time - source["offset"]))
-        return None
+        window_end = min(end, start + float(duration))
+        overlaps = _overlaps(sources, start, window_end)
+        if not overlaps:
+            return None
+        return dict(match=match, item=item, start=start, end=window_end,
+                    content_duration=window_end - start,
+                    duration=float(duration), overlaps=overlaps)
     return None
 
 
-def extract_cover_frame(ffmpeg, selection, path):
-    """Extract one reusable cover frame; failure intentionally selects dark fallback."""
+def cover_frame_selection(plan):
+    """Resolve the natural thumbnail frame within the selected intro window."""
+    selection = intro_background_selection(plan)
     if not selection:
         return None
+    start, end = selection["start"], selection["end"]
+    global_time = min(start + COVER_OFFSET_SECONDS,
+                      max(start, end - COVER_END_GUARD_SECONDS))
+    sources = selection["match"].get("source_info") or []
+    for index, source in enumerate(sources):
+        if "offset" not in source or "end" not in source:
+            continue
+        is_last = index == len(sources) - 1
+        if source["offset"] <= global_time < source["end"] or (
+                is_last and source["offset"] <= global_time <= source["end"]):
+            return dict(selection, source=source, source_index=index,
+                        global_time=global_time,
+                        local_time=max(0.0, global_time - source["offset"]))
+    return None
+
+
+def prepare_intro_background(ffmpeg, selection, path, size, fps):
+    """Build one lossless, natural moving background; return None for dark fallback."""
+    if not selection:
+        return None
+    args, filters, labels = [ffmpeg, "-y"], [], []
+    for index, (source, local_start, duration) in enumerate(selection["overlaps"]):
+        args += ["-ss", f"{local_start:.6f}", "-t", f"{duration:.6f}",
+                 "-i", source["path"]]
+        filters.append(f"[{index}:v]{fit_video_filter(size[0], size[1])},"
+                       f"fps={fps},format=yuv420p,setpts=PTS-STARTPTS[v{index}]")
+        if source.get("audio"):
+            filters.append(f"[{index}:a]aresample=48000,aformat=sample_fmts=s16:"
+                           f"channel_layouts=stereo,asetpts=PTS-STARTPTS[a{index}]")
+        else:
+            filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={duration:.6f},"
+                           f"asetpts=PTS-STARTPTS[a{index}]")
+        labels.append(f"[v{index}][a{index}]")
+    if len(labels) > 1:
+        filters.append("".join(labels) +
+                       f"concat=n={len(labels)}:v=1:a=1[basev][basea]")
+    else:
+        filters += ["[v0]null[basev]", "[a0]anull[basea]"]
+    duration = selection["duration"]
+    missing = max(0.0, duration - selection["content_duration"])
+    video_tail = (f"tpad=stop_mode=clone:stop_duration={missing:.6f}," if missing else "")
+    filters.append(f"[basev]{video_tail}trim=duration={duration:.6f},"
+                   "setpts=PTS-STARTPTS[outv]")
+    filters.append(f"[basea]apad=pad_dur={missing:.6f},atrim=duration={duration:.6f},"
+                   "asetpts=PTS-STARTPTS[outa]")
+    command = [*args, "-filter_complex", ";".join(filters),
+               "-map", "[outv]", "-map", "[outa]", "-c:v", "ffv1", "-level", "3",
+               "-c:a", "pcm_s16le", "-t", f"{duration:.3f}", str(path)]
     try:
-        subprocess.run([ffmpeg, "-y", "-ss", f"{selection['local_time']:.6f}",
-                        "-i", selection["source"]["path"], "-frames:v", "1", str(path)],
-                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                       text=True, errors="replace")
-        return str(path) if Path(path).is_file() and Path(path).stat().st_size else None
+        subprocess.run(command, check=True, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, text=True, errors="replace")
+        target = Path(path)
+        return str(target) if target.is_file() and target.stat().st_size else None
     except (OSError, subprocess.CalledProcessError):
         try:
             Path(path).unlink()
@@ -421,14 +458,17 @@ def extract_cover_frame(ffmpeg, selection, path):
         return None
 
 
-def thumbnail_command(ffmpeg, out, ass_path, background=None):
+def thumbnail_command(ffmpeg, out, ass_path, background=None,
+                      sample_seconds=COVER_OFFSET_SECONDS):
+    sub = subtitle_filter(os.path.basename(ass_path),
+                          font_directory(select_font("")))
     if background:
-        args = [ffmpeg, "-y", "-i", os.path.abspath(background)]
-        video_filter = _cover_video_filter((1280, 720), ass_path)
+        args = [ffmpeg, "-y", "-ss", f"{sample_seconds:.3f}",
+                "-i", os.path.abspath(background)]
+        video_filter = fill_video_filter(1280, 720) + "," + sub
     else:
         args = [ffmpeg, "-y", "-f", "lavfi", "-i", "color=c=#04121F:s=1280x720:d=1"]
-        video_filter = subtitle_filter(os.path.basename(ass_path),
-                                       font_directory(select_font("")))
+        video_filter = sub
     return [*args, "-vf", video_filter, "-frames:v", "1", "-q:v", "2", out]
 
 
@@ -446,8 +486,7 @@ def highlight_command(ffmpeg, out, ass_path, item, sources, size, fps, quality, 
     args, filters, labels = [ffmpeg, "-y"], [], []
     for index, (source, local_start, duration) in enumerate(overlaps):
         args += ["-ss", f"{local_start:.6f}", "-t", f"{duration:.6f}", "-i", source["path"]]
-        filters.append(f"[{index}:v]scale={size[0]}:{size[1]}:force_original_aspect_ratio=decrease,"
-                       f"pad={size[0]}:{size[1]}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},"
+        filters.append(f"[{index}:v]{fit_video_filter(size[0], size[1])},fps={fps},"
                        f"format=yuv420p,setpts=PTS-STARTPTS[v{index}]")
         if source.get("audio"):
             filters.append(f"[{index}:a]aresample=48000,aformat=sample_fmts=fltp:"
@@ -477,12 +516,13 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
     quality = settings.get("quality", "high")
     clips, commands = [], []
 
-    cover = extract_cover_frame(ffmpeg, cover_frame_selection(plan), work / "cover-frame.png")
+    background = prepare_intro_background(
+        ffmpeg, intro_background_selection(plan), work / "intro-background.mkv", size, fps)
     overall = work / "000-overall.mp4"
     overall_ass = work / "000-overall.ass"
     _write_title_ass(overall_ass, metadata, INTRO_SECONDS, size)
     commands.append(title_command(ffmpeg, str(overall), str(overall_ass), INTRO_SECONDS,
-                                  size, fps, quality, encoder, cover))
+                                  size, fps, quality, encoder, background))
     clips.append(overall)
     sequence = 1
     for match in plan["matches"]:
@@ -508,7 +548,7 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
                      "-c", "copy", "-movflags", "+faststart", layout["out"]])
     thumb_ass = work / "thumbnail.ass"
     _write_title_ass(thumb_ass, metadata, 1.0, (1280, 720))
-    commands.append(thumbnail_command(ffmpeg, layout["thumbnail"], str(thumb_ass), cover))
+    commands.append(thumbnail_command(ffmpeg, layout["thumbnail"], str(thumb_ass), background))
     return tmp, commands, clips
 
 

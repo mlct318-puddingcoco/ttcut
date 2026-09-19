@@ -66,7 +66,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 from intro_card import (FONT_PREFERENCES, installed_families, select_font, intro_duration,
                         intro_ass, intro_has_text, with_intro_filter, thumbnail_command, thumbnail_path,
-                        font_directory)
+                        font_directory, fit_video_filter)
 from match_io import (SourceError, natural_paths, make_sources, source_at,
                       reorder_sources, compatibility_issues, geometry_mismatch,
                       output_layout)
@@ -913,9 +913,7 @@ def multi_filter_graph(sources, w, h, fps, intro=False, mixed_hdr=False, pixel_f
     for i, source in enumerate(sources):
         duration = source["duration"]
         video_filters = [f"trim=duration={duration:.6f}", "setpts=PTS-STARTPTS",
-                         f"scale={w}:{h}:force_original_aspect_ratio=decrease",
-                         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2", "setsar=1",
-                         f"fps={fps}"]
+                         fit_video_filter(w, h), f"fps={fps}"]
         if mixed_hdr and source.get("trc") in ("arib-std-b67", "smpte2084"):
             video_filters.append(TONEMAP)
         video_filters.append(f"format={pixel_format}")

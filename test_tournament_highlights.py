@@ -10,11 +10,11 @@ from pathlib import Path
 from unittest import mock
 
 from tournament_highlights import (
-    COVER_BLUR, COVER_OFFSET_SECONDS, COVER_TREATMENT, INTRO_SECONDS,
+    COVER_OFFSET_SECONDS, INTRO_SECONDS,
     TournamentError, apply_review, choose_profile, cover_frame_selection,
-    discover_tag_files, extract_cover_frame, manifest_for, output_layout,
-    output_stem, pair_highlights, prepare_render, run_commands, scan_tournament,
-    validate_plan,
+    discover_tag_files, intro_background_selection, manifest_for, output_layout,
+    output_stem, pair_highlights, prepare_intro_background, prepare_render,
+    run_commands, scan_tournament, validate_plan,
 )
 from ttcut_v2_3 import (DEFAULT_ACCENT, FONT_NAME, FONT_NUM, Job, ass_colour,
                         build_ass, fold_full, probe, probe_audio, read_format,
@@ -109,7 +109,10 @@ class TournamentDiscoveryTests(unittest.TestCase):
         plan["matches"][0]["highlights"][0].update(start=4.0, end=7.0)
         plan["matches"][0]["source_info"] = [
             {"path": "/original-a.mp4", "offset": 0.0, "end": 10.0}]
+        background = intro_background_selection(plan)
         cover = cover_frame_selection(plan)
+        self.assertEqual(background["item"]["point_id"], "a2")
+        self.assertEqual(background["start"], 4.0)
         self.assertEqual(cover["item"]["point_id"], "a2")
         self.assertEqual(cover["source"]["path"], "/original-a.mp4")
         self.assertAlmostEqual(cover["global_time"], 4.0 + COVER_OFFSET_SECONDS)
@@ -134,6 +137,25 @@ class TournamentDiscoveryTests(unittest.TestCase):
         self.assertEqual(cover["source"]["path"], "two.mp4")
         self.assertAlmostEqual(cover["global_time"], 1.5)
         self.assertAlmostEqual(cover["local_time"], 0.0)
+
+    def test_intro_background_window_maps_single_and_cross_file_sources(self):
+        single = {"matches": [{"highlights": [{"point_id": "p", "start": .5,
+                                                  "end": 4.0}],
+                               "source_info": [{"path": "one.mp4", "offset": 0.0,
+                                                "end": 5.0}]}]}
+        background = intro_background_selection(single)
+        self.assertEqual((background["start"], background["end"]), (.5, 3.5))
+        self.assertEqual([(p[0]["path"], p[1], p[2]) for p in background["overlaps"]],
+                         [("one.mp4", .5, 3.0)])
+
+        crossing = {"matches": [{"highlights": [{"point_id": "p", "start": .25,
+                                                    "end": 3.25}],
+                                  "source_info": [
+                                      {"path": "one.mp4", "offset": 0.0, "end": 1.5},
+                                      {"path": "two.mp4", "offset": 1.5, "end": 4.0}]}]}
+        background = intro_background_selection(crossing)
+        self.assertEqual([(p[0]["path"], p[1], p[2]) for p in background["overlaps"]],
+                         [("one.mp4", .25, 1.25), ("two.mp4", 0.0, 1.75)])
 
     def test_scoreboard_states_cover_mid_game_later_game_and_winner(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -230,7 +252,7 @@ class TournamentDiscoveryTests(unittest.TestCase):
         finally:
             temp.cleanup()
 
-    def test_real_cover_is_shared_by_intro_and_thumbnail_then_cleaned(self):
+    def test_natural_moving_background_is_shared_by_intro_and_thumbnail_then_cleaned(self):
         with tempfile.TemporaryDirectory() as folder:
             source = Path(folder) / "source.mp4"; source.touch()
             plan = {"matches": [{
@@ -243,36 +265,71 @@ class TournamentDiscoveryTests(unittest.TestCase):
                                 "score_after": [0, 0, 1, 0]}]}]}
             layout = {"out": "/tmp/out.mp4", "thumbnail": "/tmp/thumb.jpg"}
 
-            def fake_extract(_ffmpeg, _selection, path):
-                Path(path).write_bytes(b"png")
+            def fake_prepare(_ffmpeg, _selection, path, _size, _fps):
+                Path(path).write_bytes(b"moving-video")
                 return str(path)
 
-            with mock.patch("tournament_highlights.extract_cover_frame",
-                            side_effect=fake_extract):
+            with mock.patch("tournament_highlights.prepare_intro_background",
+                            side_effect=fake_prepare):
                 temp, commands, clips = prepare_render(
                     plan, {"title": "精彩好球"},
                     {"quality": "fast", "size": (320, 180), "fps": 30}, layout,
                     "ffmpeg", build_ass, FONT_NAME, FONT_NUM,
                     ass_colour(DEFAULT_ACCENT), "libx264")
-            cover_path = str(Path(temp.name) / "cover-frame.png")
-            self.assertIn(cover_path, commands[0])
-            self.assertIn(cover_path, commands[-1])
-            self.assertIn(COVER_BLUR, " ".join(commands[0]))
-            self.assertIn(COVER_TREATMENT, " ".join(commands[-1]))
+            background_path = str(Path(temp.name) / "intro-background.mkv")
+            self.assertIn(background_path, commands[0])
+            self.assertIn(background_path, commands[-1])
+            self.assertNotIn("-loop", commands[0])
+            self.assertEqual(commands[-1][commands[-1].index("-ss") + 1],
+                             f"{COVER_OFFSET_SECONDS:.3f}")
+            rendered = " ".join(value for command in (commands[0], commands[-1])
+                                for value in command)
+            for old_filter in ("boxblur", "brightness", "saturation", "drawbox"):
+                self.assertNotIn(old_filter, rendered)
             self.assertEqual(len(clips), 2)
-            self.assertTrue(Path(cover_path).is_file())
+            self.assertTrue(Path(background_path).is_file())
             temp.cleanup()
-            self.assertFalse(Path(cover_path).exists())
+            self.assertFalse(Path(background_path).exists())
 
-    def test_extract_cover_frame_failure_removes_partial_file(self):
+    def test_intro_background_setup_failure_removes_partial_file(self):
         with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "cover.png"
+            target = Path(folder) / "background.mkv"
             target.write_bytes(b"partial")
-            selection = {"local_time": .5, "source": {"path": "/bad.mp4"}}
+            source = {"path": "/bad.mp4", "offset": 0.0, "end": 1.0, "audio": None}
+            selection = {"overlaps": [(source, 0.0, 1.0)], "content_duration": 1.0,
+                         "duration": INTRO_SECONDS}
             with mock.patch("tournament_highlights.subprocess.run",
                             side_effect=subprocess.CalledProcessError(1, ["ffmpeg"])):
-                self.assertIsNone(extract_cover_frame("ffmpeg", selection, target))
+                self.assertIsNone(prepare_intro_background(
+                    "ffmpeg", selection, target, (320, 180), 30))
             self.assertFalse(target.exists())
+
+    def test_intro_background_command_joins_sources_and_freezes_short_tail(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "background.mkv"
+            sources = [
+                {"path": "/one.mp4", "offset": 0.0, "end": 1.0, "audio": None},
+                {"path": "/two.mp4", "offset": 1.0, "end": 2.0, "audio": None},
+            ]
+            selection = {"overlaps": [(sources[0], .25, .75),
+                                       (sources[1], 0.0, 1.0)],
+                         "content_duration": 1.75, "duration": INTRO_SECONDS}
+            captured = []
+
+            def fake_run(command, **_kwargs):
+                captured.extend(command)
+                target.write_bytes(b"lossless-moving-background")
+
+            with mock.patch("tournament_highlights.subprocess.run", side_effect=fake_run):
+                self.assertEqual(prepare_intro_background(
+                    "ffmpeg", selection, target, (320, 180), 30), str(target))
+            command = " ".join(captured)
+            self.assertIn("/one.mp4", captured)
+            self.assertIn("/two.mp4", captured)
+            self.assertIn("concat=n=2:v=1:a=1", command)
+            self.assertIn("tpad=stop_mode=clone:stop_duration=1.250000", command)
+            for old_filter in ("boxblur", "brightness", "saturation", "drawbox"):
+                self.assertNotIn(old_filter, command)
 
 
 @unittest.skipUnless(Path("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg").is_file(),
@@ -285,6 +342,7 @@ class SyntheticTournamentE2E(unittest.TestCase):
         subprocess.run([self.FFMPEG,"-y","-f","lavfi","-i",
                         f"color=c={colour}:s=320x180:r=30:d={duration}",
                         "-f","lavfi","-i",f"sine=frequency={frequency}:duration={duration}",
+                        "-vf", "noise=alls=20:allf=t+u",
                         "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac","-shortest",str(path)],
                        check=True, capture_output=True)
 
@@ -292,11 +350,17 @@ class SyntheticTournamentE2E(unittest.TestCase):
         command = [self.FFMPEG, "-v", "error"]
         if at is not None:
             command += ["-ss", str(at)]
-        command += ["-i", str(path), "-vf", "crop=1:1:0:0,format=rgb24",
+        command += ["-i", str(path), "-vf", "crop=2:2:0:0,format=rgb24",
                     "-frames:v", "1", "-f", "rawvideo", "pipe:1"]
         pixel = subprocess.run(command, check=True, capture_output=True).stdout
         self.assertGreaterEqual(len(pixel), 3)
         return tuple(pixel[:3])
+
+    def frame_rgb(self, path, at):
+        return subprocess.run(
+            [self.FFMPEG, "-v", "error", "-ss", str(at), "-i", str(path),
+             "-vf", "scale=160:90,format=rgb24", "-frames:v", "1",
+             "-f", "rawvideo", "pipe:1"], check=True, capture_output=True).stdout
 
     def test_two_match_three_highlight_render_with_multifile_boundary(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -339,8 +403,14 @@ class SyntheticTournamentE2E(unittest.TestCase):
             self.assertEqual((thumb["w"],thumb["h"]),(1280,720))
             intro_rgb = self.corner_rgb(layout["out"], .5)
             thumb_rgb = self.corner_rgb(layout["thumbnail"])
+            source_intro_rgb = self.corner_rgb(bv, .5)
+            source_thumb_rgb = self.corner_rgb(bv, COVER_OFFSET_SECONDS)
             self.assertGreater(intro_rgb[1], max(intro_rgb[0], intro_rgb[2]))
             self.assertGreater(thumb_rgb[1], max(thumb_rgb[0], thumb_rgb[2]))
+            self.assertLess(max(abs(a-b) for a,b in zip(intro_rgb, source_intro_rgb)), 18)
+            self.assertLess(max(abs(a-b) for a,b in zip(thumb_rgb, source_thumb_rgb)), 18)
+            self.assertNotEqual(self.frame_rgb(layout["out"], .25),
+                                self.frame_rgb(layout["out"], 1.25))
             self.assertEqual(len(clips),3)  # intro + two selected rallies; no match cards
             self.assertFalse(any("-match.mp4" in str(path) for path in clips))
             saved = json.loads(Path(layout["manifest"]).read_text())
@@ -357,7 +427,7 @@ class SyntheticTournamentE2E(unittest.TestCase):
 
             fallback_layout = output_layout(str(root / "fallback.mp4"))
             os.makedirs(fallback_layout["folder"])
-            with mock.patch("tournament_highlights.extract_cover_frame", return_value=None):
+            with mock.patch("tournament_highlights.prepare_intro_background", return_value=None):
                 fallback_temp, fallback_commands, _ = prepare_render(
                     plan, metadata,
                     {"quality":"fast", "size":profile["size"], "fps":profile["fps"]},

@@ -126,6 +126,18 @@ def subtitle_filter(name, font_dir=None):
     return result
 
 
+def fit_video_filter(width, height):
+    """Normal-match geometry: preserve the whole frame and letter/pillar-box it."""
+    return (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1")
+
+
+def fill_video_filter(width, height):
+    """Normal-match thumbnail geometry: fill the canvas with a centered crop."""
+    return (f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},setsar=1")
+
+
 def with_intro_filter(match_graph, ass_name, fps, duration, font_dir=None,
                       score_ass_name=None, score_font_dir=None,
                       intro_video="[0:v]", intro_audio="[0:a]"):
@@ -144,6 +156,5 @@ def with_intro_filter(match_graph, ass_name, fps, duration, font_dir=None,
 
 def thumbnail_command(ffmpeg, video, out, ass_name, font_dir=None):
     return [ffmpeg, "-y", "-i", os.path.abspath(video), "-vf",
-            "scale=1280:720:force_original_aspect_ratio=increase,"
-            "crop=1280:720," + subtitle_filter(ass_name, font_dir),
+            fill_video_filter(1280, 720) + "," + subtitle_filter(ass_name, font_dir),
             "-frames:v", "1", "-q:v", "2", os.path.basename(thumbnail_path(out))]

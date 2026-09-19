@@ -6,6 +6,16 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.3.2 — Natural Highlight Cover
+
+- Tournament compilations now use the first selected rally's moving source
+  footage for the three-second overall intro, starting at the rally clip start
+  and joining source segments when the window crosses a multi-file boundary.
+- The intro and 1280×720 thumbnail use the same natural background sequence and
+  the normal-match aspect-ratio rules. Blur, darkening, desaturation, and the
+  black overlay were removed; short windows freeze the last frame and setup
+  failure safely falls back to the existing dark title card.
+
 ## Koko v1.3.1 — Highlight Presentation Polish
 
 - Removed per-match separator cards from tournament compilations while retaining
