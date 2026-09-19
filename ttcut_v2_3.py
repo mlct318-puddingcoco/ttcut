@@ -1422,10 +1422,14 @@ HTML = r"""<meta charset="utf-8">
   .streamhead{display:flex;justify-content:space-between;align-items:center;padding:9px 14px;
     border-bottom:1px solid var(--line-soft);font-size:11px;letter-spacing:.13em;
     text-transform:uppercase;color:var(--ink-dim)}
+  .streammeta{display:flex;gap:10px;align-items:center}
+  .streammeta .highlights{color:var(--warn)}
   .stream{flex:1;overflow-y:auto;min-height:80px}
-  .ev{display:grid;grid-template-columns:60px 1fr auto auto;gap:8px;align-items:center;
+  .ev{display:grid;grid-template-columns:60px 1fr auto auto 25px 18px;gap:7px;align-items:center;
     padding:6px 14px;border-bottom:1px solid rgba(32,72,110,.5);cursor:pointer;font-size:12.5px}
   .ev:hover{background:var(--table-2)}
+  .ev.highlighted{background:rgba(255,194,77,.055)}
+  .ev.highlighted:hover{background:rgba(255,194,77,.095)}
   .ev time{font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
   .ev .lbl{display:flex;align-items:center;gap:7px;min-width:0}
   .ev .dot{width:6px;height:6px;border-radius:50%;background:var(--line);flex:none}
@@ -1433,6 +1437,12 @@ HTML = r"""<meta charset="utf-8">
   .ev.game .dot{background:var(--warn)}
   .ev .sc{font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
   .ev .sc em{color:var(--warn);font-style:normal}
+  .ev .highlight-badge{border:1px solid rgba(255,194,77,.55);border-radius:3px;
+    padding:1px 5px;color:var(--warn);font-size:10px;white-space:nowrap}
+  .ev .star{border:0;background:none;color:var(--ink-dim);cursor:pointer;padding:2px;
+    font-size:16px;line-height:1}
+  .ev .star:hover,.ev .star[aria-pressed=true]{color:var(--warn)}
+  .ev .star-space{width:25px}
   .ev .kill{border:0;background:none;color:var(--ink-dim);cursor:pointer;padding:0 3px;font-size:15px}
   .ev .kill:hover{color:var(--ball)}
   .streamempty{padding:22px 14px;color:var(--ink-dim);font-size:12.5px;line-height:1.7}
@@ -1606,6 +1616,7 @@ HTML = r"""<meta charset="utf-8">
       <span><kbd>S</kbd>發球</span>
       <span><kbd>A</kbd>A 得分</span>
       <span><kbd>B</kbd>B 得分</span>
+      <span><kbd>H</kbd>精彩球</span>
       <span><kbd>N</kbd>換局</span>
       <span><kbd>Z</kbd>復原</span>
       <span><kbd>← →</kbd>逐格</span>
@@ -1648,7 +1659,7 @@ HTML = r"""<meta charset="utf-8">
       </div>
     </details>
 
-    <div class="streamhead"><span>事件</span><span id="evcount">0</span></div>
+    <div class="streamhead"><span>事件</span><span class="streammeta"><span class="highlights">精彩球 <b id="highlightCount">0</b></span><span id="evcount">0</span></span></div>
     <div class="stream" id="stream"></div>
 
     <div class="cutout">
@@ -1768,6 +1779,16 @@ HTML = r"""<meta charset="utf-8">
     s = Math.round(s);
     return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
   };
+  const eventPayload = e => ({
+    t: +e.t.toFixed(3), frame: frameOf(e.t), type: e.type,
+    ...(e.winner === undefined ? {} : {winner: e.winner}),
+    ...(e.type === 'point' && e.highlight === true ? {highlight: true} : {})
+  });
+  const normalizeEvents = raw => (Array.isArray(raw) ? raw : []).map(x => ({
+    t: x.t, type: x.type,
+    ...(x.winner === undefined ? {} : {winner: x.winner}),
+    ...(x.type === 'point' && x.highlight === true ? {highlight: true} : {})
+  })).sort((a,b) => a.t - b.t);
 
   /* ───────────────────────── 送去 Python 的資料
      計分與剪接統計一律由 Python 算，介面不再自己實作一份。 */
@@ -1790,10 +1811,7 @@ HTML = r"""<meta charset="utf-8">
       scoreboard: {style: $('scoreboardStyle').value, accent: $('accent').value},
       stats: {enabled: $('stats').checked, hold: num('statsHold', 1)},
       intro: introPayload(),
-      events: events.map(e => ({
-        t: +e.t.toFixed(3), frame: frameOf(e.t), type: e.type,
-        ...(e.winner === undefined ? {} : {winner: e.winner})
-      }))
+      events: events.map(eventPayload)
     };
   }
   const introIds = ['introTournament','introCategory','introPlayerA','introSchoolA',
@@ -2240,6 +2258,46 @@ HTML = r"""<meta charset="utf-8">
     events.splice(idx, 1); refresh();
   }
 
+  function completedPointIndexes(list=events) {
+    const completed = new Set();
+    let hasServe = false;
+    list.forEach((event, index) => {
+      if (event.type === 'serve') hasServe = true;
+      else if (event.type === 'point') {
+        if (hasServe) completed.add(index);
+        hasServe = false;
+      } else if (event.type === 'game') hasServe = false;
+    });
+    return {completed, open:hasServe};
+  }
+
+  function toggleHighlightAt(index) {
+    const {completed} = completedPointIndexes();
+    const event = events[index];
+    if (!event || !completed.has(index)) {
+      banner('只能標記已有發球與得分的完成回合。');
+      return false;
+    }
+    event.highlight = event.highlight !== true;
+    if (!event.highlight) delete event.highlight;
+    refresh();
+    return true;
+  }
+
+  function toggleLatestHighlight() {
+    const {completed, open} = completedPointIndexes();
+    if (open) {
+      banner('請先按 A 或 B 完成這一回合，再標記精彩球。');
+      return false;
+    }
+    const indexes = [...completed];
+    if (!indexes.length) {
+      banner('尚無可標記的完成回合。');
+      return false;
+    }
+    return toggleHighlightAt(indexes[indexes.length - 1]);
+  }
+
   /* ───────────────────────── Rally Detection v0.2.3
      ROI 影像才會產生候選；音訊只佐證接近門檻的視覺片段。
      只有使用者按下「確認發球」才會寫入事件，得分者仍完全手動。 */
@@ -2392,10 +2450,13 @@ HTML = r"""<meta charset="utf-8">
 
     const stream = $('stream');
     $('evcount').textContent = events.length;
+    $('highlightCount').textContent = events.filter(e =>
+      e.type === 'point' && e.highlight === true).length;
     if (!events.length) {
       stream.innerHTML = '<div class="streamempty">還沒有事件。<br>播放影片，在發球觸拍的瞬間按 <b style="color:var(--ink)">S</b>，得分時按 <b style="color:var(--ink)">A</b> 或 <b style="color:var(--ink)">B</b>。</div>';
     } else {
       let prevServe = false, html = '';
+      const {completed} = completedPointIndexes();
       events.forEach((e, i) => {
         const s = st.snaps[i];
         let label, cls;
@@ -2404,11 +2465,18 @@ HTML = r"""<meta charset="utf-8">
         else { cls = 'point'; label = nm[e.winner === 'A' ? 0 : 1] + ' 得分'; }
         prevServe = e.type === 'serve';
         const sc = s ? (s.won ? `<em>${s.gA}–${s.gB} 局</em>` : `${s.a}–${s.b}`) : '';
-        html += `<div class="ev ${cls}" data-i="${i}">
+        const highlighted = e.type === 'point' && e.highlight === true;
+        const badge = highlighted ? '<span class="highlight-badge">★ 精彩球</span>' : '';
+        const star = completed.has(i)
+          ? `<button class="star" data-highlight="${i}" aria-pressed="${highlighted}"
+              title="${highlighted ? '取消精彩球' : '標記精彩球'}" aria-label="${highlighted ? '取消精彩球' : '標記精彩球'}">★</button>`
+          : '<span class="star-space"></span>';
+        html += `<div class="ev ${cls}${highlighted ? ' highlighted' : ''}" data-i="${i}">
           <time>${fmt(e.t)}</time>
-          <span class="lbl"><i class="dot"></i>${label}</span>
+          <span class="lbl"><i class="dot"></i>${label}${badge}</span>
           <span class="sc">${s && s.won ? `${s.a}–${s.b}` : ''}</span>
           <span class="sc">${sc}</span>
+          ${star}
           <button class="kill" data-kill="${i}" title="刪除">×</button>
         </div>`;
       });
@@ -2490,6 +2558,8 @@ HTML = r"""<meta charset="utf-8">
   }
 
   $('stream').addEventListener('click', e => {
+    const h = e.target.closest('[data-highlight]');
+    if (h) { toggleHighlightAt(+h.dataset.highlight); return; }
     const k = e.target.closest('[data-kill]');
     if (k) { events.splice(+k.dataset.kill, 1); refresh(); return; }
     const row = e.target.closest('.ev');
@@ -2509,9 +2579,15 @@ HTML = r"""<meta charset="utf-8">
     .forEach(id => $(id).addEventListener('input', refresh));
 
   /* ───────────────────────── 鍵盤 */
-  addEventListener('keydown', e => {
-    const el = document.activeElement;
-    if (el && /^(INPUT|SELECT|TEXTAREA|BUTTON|SUMMARY)$/.test(el.tagName)) return;
+  function isEditableTarget(el) {
+    if (!el) return false;
+    if (el.isContentEditable || /^(INPUT|SELECT|TEXTAREA|BUTTON|SUMMARY)$/.test(el.tagName || ''))
+      return true;
+    return !!(el.closest && el.closest('[contenteditable]:not([contenteditable="false"])'));
+  }
+  function handleKeydown(e) {
+    const el = e.target || document.activeElement;
+    if (isEditableTarget(el)) return;
     if (e.metaKey || e.ctrlKey) return;
     const step = e.altKey ? 5 : e.shiftKey ? 1 : 1 / fps();
     switch (e.key) {
@@ -2521,6 +2597,7 @@ HTML = r"""<meta charset="utf-8">
       case 's': case 'S': add('serve'); break;
       case 'a': case 'A': add('point', 'A'); break;
       case 'b': case 'B': add('point', 'B'); break;
+      case 'h': case 'H': toggleLatestHighlight(); break;
       case 'n': case 'N': add('game'); break;
       case 'z': case 'Z': undo(); break;
       case '1': setRate(0.5); break;
@@ -2530,7 +2607,8 @@ HTML = r"""<meta charset="utf-8">
       default: return;
     }
     e.preventDefault();
-  });
+  }
+  addEventListener('keydown', handleKeydown);
 
   /* ───────────────────────── 渲染 */
   $('go').addEventListener('click', async () => {
@@ -2641,10 +2719,7 @@ HTML = r"""<meta charset="utf-8">
           $('saveAs').disabled = false; $('defaultOut').disabled = false;
           mountVideo(); updateOutputSuggestion();
         }
-        events = (d.events || []).map(x => ({
-          t: x.t, type: x.type,
-          ...(x.winner === undefined ? {} : {winner: x.winner})
-        })).sort((a,b) => a.t - b.t);
+        events = normalizeEvents(d.events);
         if (d.fps) $('fps').value = d.fps;
         if (d.players) { $('nameA').value = d.players.A; $('nameB').value = d.players.B; }
         if (d.firstServer) $('firstServer').value = d.firstServer === 'B' ? '1' : '0';

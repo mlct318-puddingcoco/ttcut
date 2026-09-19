@@ -28,6 +28,16 @@ EXPECTED_NAME = ("北港媽祖盃全國桌球錦標賽_國小男童一年級以�
 
 
 class IntroTests(unittest.TestCase):
+    def test_highlight_field_is_backward_tolerant_in_render_plan(self):
+        highlighted = json.loads(json.dumps(DOC))
+        highlighted["events"][1]["highlight"] = True
+        old = plan(DOC, {})
+        new = plan(highlighted, {})
+        self.assertTrue(new["events"][1]["highlight"])
+        self.assertEqual(new["cuts"], old["cuts"])
+        self.assertEqual(new["keeps"], old["keeps"])
+        self.assertEqual(new["scoring"], old["scoring"])
+
     def test_font_fallback_and_duration(self):
         available = {"Kaiti TC", "Songti TC"}
         self.assertEqual(select_font("Missing", available), "Kaiti TC")
