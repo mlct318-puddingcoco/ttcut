@@ -60,7 +60,7 @@ ttcut V2 — 桌球比賽影片：標記、剪去撿球、疊上常駐計分板�
     Windows: 下載 ffmpeg.exe 放在本腳本旁邊，或用 --ffmpeg 指定資料夾
 """
 
-import argparse, json, mimetypes, os, platform, re, shutil, socket, unicodedata
+import argparse, errno, json, math, mimetypes, os, platform, re, shutil, socket, unicodedata
 import subprocess, sys, tempfile, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
@@ -105,7 +105,8 @@ A_PANEL, A_CHIP, A_RULE = 0x1E, 0x00, 0x40    # 0x00 全不透明 → 0xFF 全�
 DEFAULT_ACCENT = "#FF7A18"    # 得分數字與名字左側裝飾條共用的強調色
 
 # Koko 彩色表格；基準為 1920×1080，與原版共用等比縮放係數。
-KOKO_NAME_W, KOKO_GAMES_W, KOKO_POINTS_W = 510, 78, 92
+KOKO_NAME_MIN_W, KOKO_NAME_MAX_W = 240, 510
+KOKO_GAMES_W, KOKO_POINTS_W = 78, 92
 KOKO_ROW_H = 60
 KOKO_NAME_PAD = 24
 KOKO_NAME_FS, KOKO_NAME_MIN_FS = 34, 22
@@ -398,32 +399,48 @@ def rect(x, y, w, h, colour, alpha, layer=0):
     return layer, f"{{{tags}}}m 0 0 l {w} 0 l {w} {h} l 0 {h}"
 
 
-def koko_layout(width, height):
-    """固定欄位幾何，以 1080p 座標等比縮放到輸出解析度。"""
+def koko_name_units(name):
+    """估算粗體中文字型的 em 寬度：全形/CJK 為 1，拉丁字元為 0.58。"""
+    return sum(0 if unicodedata.combining(ch) else
+               1.0 if unicodedata.east_asian_width(ch) in "WF" else 0.58
+               for ch in ass_text(name))
+
+
+def koko_name_width(names):
+    """兩列共用的 1080p 姓名欄寬；依較長標籤計算並限制上下限。"""
+    units = max((koko_name_units(name) for name in names), default=0)
+    natural = math.ceil(units * KOKO_NAME_FS + 2 * KOKO_NAME_PAD)
+    return max(KOKO_NAME_MIN_W, min(KOKO_NAME_MAX_W, natural))
+
+
+def koko_layout(width, height, names=()):
+    """Koko 欄位幾何，以 1080p 座標等比縮放到輸出解析度。"""
     k = min(width / BASE_W, height / BASE_H)
     s = lambda value: round(value * k)
-    name_w, games_w, points_w = map(s, (KOKO_NAME_W, KOKO_GAMES_W, KOKO_POINTS_W))
+    base_name_w = koko_name_width(names)
+    name_w, games_w, points_w = map(
+        s, (base_name_w, KOKO_GAMES_W, KOKO_POINTS_W))
     row_h = s(KOKO_ROW_H)
     x = s(PAD_L)
     y = height - s(PAD_B) - 2 * row_h
-    return dict(k=k, x=x, y=y, name_w=name_w, games_w=games_w,
+    return dict(k=k, x=x, y=y, base_name_w=base_name_w,
+                name_w=name_w, games_w=games_w,
                 points_w=points_w, row_h=row_h,
                 games_cx=x + name_w + games_w // 2,
                 points_cx=x + name_w + games_w + points_w // 2)
 
 
-def koko_name_size(name):
-    """只縮姓名字級；保留固定欄寬，超過最小字級時由 ASS clip 防溢出。"""
-    units = sum(1.0 if unicodedata.east_asian_width(ch) in "WF" else 0.58
-                for ch in ass_text(name))
-    available = KOKO_NAME_W - 2 * KOKO_NAME_PAD
+def koko_name_size(name, name_width=KOKO_NAME_MAX_W):
+    """只縮姓名字級；達最大欄寬後縮字，最小字級仍放不下則 clip。"""
+    units = koko_name_units(name)
+    available = name_width - 2 * KOKO_NAME_PAD
     return max(KOKO_NAME_MIN_FS,
                min(KOKO_NAME_FS, int(available / max(units, 1))))
 
 
 def koko_scoreboard_lines(stamped, total, names, width, height):
-    """兩列固定表格；每項為 (layer, style, start, end, ASS text)。"""
-    geo = koko_layout(width, height)
+    """兩列對齊表格；每項為 (layer, style, start, end, ASS text)。"""
+    geo = koko_layout(width, height, names)
     k, x, y = geo["k"], geo["x"], geo["y"]
     nw, gw, pw, rh = (geo[key] for key in
                        ("name_w", "games_w", "points_w", "row_h"))
@@ -441,7 +458,7 @@ def koko_scoreboard_lines(stamped, total, names, width, height):
         name_x = x + s(KOKO_NAME_PAD)
         name_y = top + rh // 2
         clip_right = x + nw - s(KOKO_NAME_PAD)
-        fs = s(koko_name_size(names[row]))
+        fs = s(koko_name_size(names[row], geo["base_name_w"]))
         out.append((1, "Nm", 0, total,
                     f"{{\\an4\\pos({name_x},{name_y})\\fs{fs}\\b1"
                     f"\\1c{KOKO_WHITE}\\clip({name_x},{top},{clip_right},{top + rh})}}"
@@ -2709,6 +2726,21 @@ def guess_type(path):
     return t
 
 
+PREVIEW_DISCONNECT_ERRNOS = {
+    errno.EPIPE,
+    errno.ECONNRESET,
+    errno.ECONNABORTED,
+    errno.ENOBUFS,
+}
+
+
+def is_preview_disconnect(ex):
+    """只辨識瀏覽器放棄預覽 Range request 時會出現的 socket 錯誤。"""
+    return (isinstance(ex, (BrokenPipeError, ConnectionResetError,
+                            ConnectionAbortedError))
+            or getattr(ex, "errno", None) in PREVIEW_DISCONNECT_ERRNOS)
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = f"ttcut/{VERSION}"
 
@@ -2728,8 +2760,10 @@ class Handler(BaseHTTPRequestHandler):
     def _write(self, data):
         try:
             self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError):
-            pass                                # 瀏覽器中斷 range 請求是常態
+        except OSError as ex:
+            if not is_preview_disconnect(ex):
+                raise
+            # 瀏覽器中斷 range 請求是常態；停止這次傳送，不重試。
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -2872,8 +2906,10 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(chunk)
                     left -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+        except OSError as ex:
+            if not is_preview_disconnect(ex):
+                raise
+            # seek／跨檔時瀏覽器已改送新的 Range request，舊串流直接結束。
 
     # ── 計分（唯一權威）
     def _fold(self):
