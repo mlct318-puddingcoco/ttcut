@@ -1,15 +1,17 @@
 """Workflow regression checks: opening card, paths, fonts, and local actions."""
 
+import errno
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from intro_card import (SAMPLE_LINES, intro_ass, intro_has_text, intro_duration, select_font,
                         thumbnail_command, thumbnail_path, with_intro_filter)
 from ttcut_v2_3 import (Handler, STATE, STATE_LOCK, QUALITY, build_render,
-                        default_out, filter_script, intro_filename, plan,
+                        default_out, filter_script, intro_filename,
+                        is_preview_disconnect, plan, run_job_managed,
                         safe_filename_part, unique_default_out)
 
 
@@ -115,6 +117,40 @@ class IntroTests(unittest.TestCase):
 
 
 class ActionTests(unittest.TestCase):
+    def test_preview_stream_ignores_only_browser_disconnect_errors(self):
+        expected = (errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED, errno.ENOBUFS)
+        for error_number in expected:
+            with self.subTest(errno=error_number):
+                self.assertTrue(is_preview_disconnect(OSError(error_number, "closed")))
+        self.assertFalse(is_preview_disconnect(OSError(errno.EIO, "disk error")))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = str(Path(tmp) / "source.mp4")
+            Path(source).write_bytes(b"preview")
+            handler = Handler.__new__(Handler)
+            handler.path = "/video"
+            handler.headers = {"Range": "bytes=2-5"}
+            handler.send_response = Mock()
+            handler.send_header = Mock()
+            handler.end_headers = Mock()
+            with STATE_LOCK:
+                previous = dict(STATE)
+                STATE.update(video=source, sources=[])
+            try:
+                handler.wfile = Mock()
+                handler.wfile.write.side_effect = OSError(errno.ENOBUFS, "full")
+                handler._video()  # Browser abort ends this request quietly.
+                handler.send_response.assert_called_with(206)
+                handler.send_header.assert_any_call("Content-Range", "bytes 2-5/7")
+                handler.send_header.assert_any_call("Content-Length", "4")
+                handler.wfile.write.side_effect = OSError(errno.EIO, "disk error")
+                with self.assertRaises(OSError) as raised:
+                    handler._video()
+                self.assertEqual(raised.exception.errno, errno.EIO)
+            finally:
+                with STATE_LOCK:
+                    STATE.update(previous)
+
     def test_structured_filename_fallback_sanitization_and_duplicates(self):
         self.assertEqual(intro_filename(SAMPLE_INTRO), EXPECTED_NAME)
         self.assertEqual(intro_filename(dict(SAMPLE_INTRO, enabled=False)), EXPECTED_NAME)
@@ -212,6 +248,9 @@ class ActionTests(unittest.TestCase):
                      patch('ttcut_v2_3.threading.Thread') as thread:
                     handler._render()
                     thread.return_value.start.assert_called_once()
+                    args = thread.call_args.kwargs['args']
+                    with patch('ttcut_v2_3.run_job', side_effect=lambda job, *_: setattr(job, 'state', 'done')):
+                        run_job_managed(*args)
                 chosen = str(base.with_name(base.stem + '_3.mp4'))
                 self.assertEqual(seen[-1][1]['out'], chosen)
                 self.assertEqual(seen[-1][1]['thumbnail'], thumbnail_path(chosen))
@@ -225,8 +264,10 @@ class ActionTests(unittest.TestCase):
                                          'out': str(base), 'customOutput': True}
                 with patch('ttcut_v2_3.build_render', return_value=([], tmp, None)), \
                      patch('ttcut_v2_3.probe', return_value={'duration': 6}), \
-                     patch('ttcut_v2_3.threading.Thread'):
+                     patch('ttcut_v2_3.threading.Thread') as thread:
                     handler._render()
+                    args = thread.call_args.kwargs['args']
+                    args[4].cleanup()
                 self.assertEqual(seen[-1][1]['out'], str(base))
             finally:
                 with STATE_LOCK:
