@@ -6,6 +6,16 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.3.3 — Highlight Timing Fix
+
+- Fixed 59.94 fps Tournament Highlight exports playing every rally after the
+  moving intro in slow motion. The FFV1 background's millisecond time base had
+  produced a non-standard intro frame rate that was unsafe to stream-copy next
+  to exact `60000/1001` rally clips.
+- Every intro and rally segment now uses the same exact rational frame rate,
+  MP4 video track timescale, zero-based timestamps, pixel format, and 48 kHz
+  stereo AAC profile before the existing no-reencode final concatenation.
+
 ## Koko v1.3.2 — Natural Highlight Cover
 
 - Tournament compilations now use the first selected rally's moving source

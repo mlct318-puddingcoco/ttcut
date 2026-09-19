@@ -7,10 +7,12 @@ boundaries and score states are always derived from the original match document.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 
 from intro_card import (fill_video_filter, fit_video_filter, font_directory,
@@ -311,7 +313,9 @@ def choose_profile(plan):
     common = len(signatures) == 1
     first = sources[0]
     return dict(size=(first["w"], first["h"]) if common else (1920, 1080),
-                fps=first["fps"] if common else 30.0, normalized=not common)
+                fps=first["fps"] if common else 30.0,
+                fps_frac=first["fps_frac"] if common else "30/1",
+                normalized=not common)
 
 
 def manifest_for(plan, metadata, settings):
@@ -343,6 +347,30 @@ def _encoder_args(quality, encoder, bitrate="20M"):
             "-bufsize", "40M", "-pix_fmt", "yuv420p"]
 
 
+def _fps_profile(settings):
+    """Return one exact CFR and MP4 timescale shared by every concat segment."""
+    raw = settings.get("fps_frac") or settings.get("fps", 30)
+    try:
+        rate = Fraction(str(raw)).limit_denominator(1_000_000)
+    except (ValueError, ZeroDivisionError) as ex:
+        raise TournamentError(f"無效的輸出影格率：{raw}") from ex
+    if rate <= 0:
+        raise TournamentError(f"無效的輸出影格率：{raw}")
+    fps = f"{rate.numerator}/{rate.denominator}"
+    # A multiple of the frame-rate numerator represents every frame duration
+    # exactly.  Keep at least 10 kHz precision for integer rates such as 30/60.
+    multiplier = (1000 if rate.denominator == 1 else
+                  max(1, math.ceil(10_000 / rate.numerator)))
+    return fps, rate.numerator * multiplier
+
+
+def _segment_output_args(fps, video_timescale):
+    """Force stream-copy-compatible timing and audio on every MP4 segment."""
+    return ["-r", fps, "-fps_mode", "cfr",
+            "-video_track_timescale", str(video_timescale),
+            "-ar", "48000", "-ac", "2"]
+
+
 def _write_title_ass(path, metadata, duration, size):
     data = {"lines": [metadata.get("tournament", ""),
                        metadata.get("title", "精彩好球"),
@@ -354,21 +382,27 @@ def _write_title_ass(path, metadata, duration, size):
 
 
 def title_command(ffmpeg, out, ass_path, duration, size, fps, quality, encoder,
-                  background=None):
+                  video_timescale, background=None):
     sub = subtitle_filter(os.path.basename(ass_path),
                           font_directory(select_font("")))
     if background:
         args = [ffmpeg, "-y", "-i", os.path.abspath(background)]
         maps = ["-map", "0:v:0", "-map", "0:a:0"]
-        video_filter = fit_video_filter(size[0], size[1]) + "," + sub
+        video_filter = (fit_video_filter(size[0], size[1]) +
+                        f",fps={fps},setpts=N/FRAME_RATE/TB," + sub)
     else:
         args = [ffmpeg, "-y", "-f", "lavfi", "-i",
                 f"color=c=#04121F:s={size[0]}x{size[1]}:r={fps}:d={duration}",
                 "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={duration}"]
         maps = ["-map", "0:v:0", "-map", "1:a:0"]
-        video_filter = sub
-    return [*args, *maps, "-vf", video_filter, "-t", f"{duration:.3f}",
+        video_filter = f"fps={fps},setpts=N/FRAME_RATE/TB," + sub
+    audio_filter = (f"atrim=duration={duration:.6f},aresample=48000,"
+                    "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                    "asetpts=PTS-STARTPTS")
+    return [*args, *maps, "-vf", video_filter, "-af", audio_filter,
+            "-t", f"{duration:.3f}",
             *_encoder_args(quality, encoder), "-c:a", "aac", "-b:a", "256k",
+            *_segment_output_args(fps, video_timescale),
             "-shortest", "-movflags", "+faststart", out]
 
 
@@ -481,7 +515,8 @@ def _overlaps(sources, start, end):
     return result
 
 
-def highlight_command(ffmpeg, out, ass_path, item, sources, size, fps, quality, encoder):
+def highlight_command(ffmpeg, out, ass_path, item, sources, size, fps, quality,
+                      encoder, video_timescale):
     overlaps = _overlaps(sources, item["start"], item["end"])
     args, filters, labels = [ffmpeg, "-y"], [], []
     for index, (source, local_start, duration) in enumerate(overlaps):
@@ -496,13 +531,20 @@ def highlight_command(ffmpeg, out, ass_path, item, sources, size, fps, quality, 
                            f"asetpts=PTS-STARTPTS[a{index}]")
         labels.append(f"[v{index}][a{index}]")
     if len(overlaps) > 1:
-        filters.append("".join(labels) + f"concat=n={len(overlaps)}:v=1:a=1[basev][outa]")
+        filters.append("".join(labels) +
+                       f"concat=n={len(overlaps)}:v=1:a=1[basev][basea]")
     else:
-        filters += ["[v0]null[basev]", "[a0]anull[outa]"]
+        filters += ["[v0]null[basev]", "[a0]anull[basea]"]
     sub = subtitle_filter(os.path.basename(ass_path), font_directory(select_font("")))
-    filters.append(f"[basev]{sub}[outv]")
+    duration = float(item["duration"])
+    filters.append(f"[basev]fps={fps},trim=duration={duration:.6f},"
+                   f"setpts=N/FRAME_RATE/TB,{sub}[outv]")
+    filters.append(f"[basea]atrim=duration={duration:.6f},aresample=48000,"
+                   "aformat=sample_fmts=fltp:channel_layouts=stereo,"
+                   "asetpts=PTS-STARTPTS[outa]")
     return [*args, "-filter_complex", ";".join(filters), "-map", "[outv]", "-map", "[outa]",
             *_encoder_args(quality, encoder), "-c:a", "aac", "-b:a", "256k",
+            *_segment_output_args(fps, video_timescale),
             "-shortest", "-movflags", "+faststart", out]
 
 
@@ -512,7 +554,7 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
     tmp = tempfile.TemporaryDirectory(prefix="ttcut-highlights-")
     work = Path(tmp.name)
     size = tuple(settings.get("size", (1920, 1080)))
-    fps = float(settings.get("fps", 30))
+    fps, video_timescale = _fps_profile(settings)
     quality = settings.get("quality", "high")
     clips, commands = [], []
 
@@ -522,7 +564,7 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
     overall_ass = work / "000-overall.ass"
     _write_title_ass(overall_ass, metadata, INTRO_SECONDS, size)
     commands.append(title_command(ffmpeg, str(overall), str(overall_ass), INTRO_SECONDS,
-                                  size, fps, quality, encoder, background))
+                                  size, fps, quality, encoder, video_timescale, background))
     clips.append(overall)
     sequence = 1
     for match in plan["matches"]:
@@ -539,7 +581,7 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
                                      scoreboard_style="koko"), encoding="utf-8")
             commands.append(highlight_command(ffmpeg, str(clip), str(ass), item,
                                               match["source_info"], size, fps,
-                                              quality, encoder))
+                                              quality, encoder, video_timescale))
             clips.append(clip)
             sequence += 1
     concat = work / "concat.txt"

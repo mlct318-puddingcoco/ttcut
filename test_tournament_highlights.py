@@ -210,12 +210,14 @@ class TournamentDiscoveryTests(unittest.TestCase):
             {"point_time":2,"point_id":"1:2.000"}], "source_info":[
             {"w":3840,"h":2160,"fps":60,"fps_frac":"60/1","audio":None}]}]}
         self.assertEqual(choose_profile(plan)["size"], (3840,2160))
+        self.assertEqual(choose_profile(plan)["fps_frac"], "60/1")
         mixed = copy.deepcopy(plan)
         mixed["matches"][0]["source_info"].append(
             {"w":1280,"h":720,"fps":29.97,"fps_frac":"30000/1001",
              "audio":{"codec_name":"pcm_s16le","sample_rate":"44100","channels":1}})
         self.assertEqual(choose_profile(mixed),
-                         {"size":(1920,1080),"fps":30.0,"normalized":True})
+                         {"size":(1920,1080),"fps":30.0,"fps_frac":"30/1",
+                          "normalized":True})
         manifest = manifest_for(plan, metadata, {"quality":"high"})
         self.assertEqual(manifest["type"], "koko-highlight-project")
         self.assertEqual(manifest["presentation"]["intro_seconds"], INTRO_SECONDS)
@@ -275,7 +277,7 @@ class TournamentDiscoveryTests(unittest.TestCase):
                     plan, {"title": "精彩好球"},
                     {"quality": "fast", "size": (320, 180), "fps": 30}, layout,
                     "ffmpeg", build_ass, FONT_NAME, FONT_NUM,
-                    ass_colour(DEFAULT_ACCENT), "libx264")
+                    ass_colour(DEFAULT_ACCENT), "h264_videotoolbox")
             background_path = str(Path(temp.name) / "intro-background.mkv")
             self.assertIn(background_path, commands[0])
             self.assertIn(background_path, commands[-1])
@@ -287,6 +289,14 @@ class TournamentDiscoveryTests(unittest.TestCase):
             for old_filter in ("boxblur", "brightness", "saturation", "drawbox"):
                 self.assertNotIn(old_filter, rendered)
             self.assertEqual(len(clips), 2)
+            for command in commands[:len(clips)]:
+                self.assertEqual(command[command.index("-c:v") + 1],
+                                 "h264_videotoolbox")
+                self.assertEqual(command[command.index("-r") + 1], "30/1")
+                self.assertEqual(command[command.index("-video_track_timescale") + 1],
+                                 "30000")
+                self.assertEqual(command[command.index("-ar") + 1], "48000")
+                self.assertEqual(command[command.index("-ac") + 1], "2")
             self.assertTrue(Path(background_path).is_file())
             temp.cleanup()
             self.assertFalse(Path(background_path).exists())
@@ -345,6 +355,71 @@ class SyntheticTournamentE2E(unittest.TestCase):
                         "-vf", "noise=alls=20:allf=t+u",
                         "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac","-shortest",str(path)],
                        check=True, capture_output=True)
+
+    def make_motion_video(self, path, rate, frequency, duration):
+        subprocess.run(
+            [self.FFMPEG, "-y", "-f", "lavfi", "-i",
+             f"testsrc2=s=320x180:r={rate}:d={duration}",
+             "-f", "lavfi", "-i",
+             f"sine=frequency={frequency}:sample_rate=48000:duration={duration}",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+             "-ar", "48000", "-ac", "2", "-shortest", str(path)],
+            check=True, capture_output=True)
+
+    def source_info(self, path, offset=0.0):
+        info = probe(str(path), self.FFPROBE)
+        info.update(path=str(path), offset=offset,
+                    end=offset + info["duration"],
+                    audio=probe_audio(str(path), self.FFPROBE))
+        return info
+
+    @staticmethod
+    def highlight(point_id, start, end, point_time, before, after):
+        return dict(point_id=point_id, start=start, end=end, duration=end-start,
+                    point_time=point_time, score_before=before, score_after=after)
+
+    def media_details(self, path):
+        raw = subprocess.run(
+            [self.FFPROBE, "-v", "error", "-show_entries",
+             "stream=index,codec_type,codec_name,pix_fmt,width,height,r_frame_rate,"
+             "avg_frame_rate,time_base,start_time,duration,sample_rate,channels,"
+             "channel_layout:format=start_time,duration", "-of", "json", str(path)],
+            check=True, capture_output=True, text=True).stdout
+        return json.loads(raw)
+
+    def assert_monotonic_dts(self, path, selector):
+        raw = subprocess.run(
+            [self.FFPROBE, "-v", "error", "-select_streams", selector,
+             "-show_packets", "-show_entries", "packet=dts_time",
+             "-of", "csv=p=0", str(path)], check=True,
+            capture_output=True, text=True).stdout
+        values = [float(line.split(",", 1)[0]) for line in raw.splitlines()
+                  if line.split(",", 1)[0].strip() != "N/A"]
+        self.assertGreater(len(values), 1)
+        self.assertTrue(all(left <= right for left, right in zip(values, values[1:])))
+
+    def frame_count(self, path):
+        raw = subprocess.run(
+            [self.FFPROBE, "-v", "error", "-count_frames", "-select_streams", "v:0",
+             "-show_entries", "stream=nb_read_frames", "-of", "default=nw=1:nk=1",
+             str(path)], check=True, capture_output=True, text=True).stdout
+        return int(raw.strip())
+
+    def render_direct(self, root, plan, profile, name):
+        folder = root / name
+        folder.mkdir()
+        layout = {"out": str(folder / f"{name}.mp4"),
+                  "thumbnail": str(folder / f"{name}.jpg")}
+        settings = {"quality": "fast", "size": profile["size"],
+                    "fps": profile["fps"], "fps_frac": profile["fps_frac"]}
+        temp, commands, clips = prepare_render(
+            plan, {"tournament":"Test", "title":"Highlights",
+                   "protagonist":"A", "school":"School"},
+            settings, layout, self.FFMPEG, build_ass, FONT_NAME, FONT_NUM,
+            ass_colour(DEFAULT_ACCENT), "libx264")
+        for command in commands:
+            subprocess.run(command, cwd=temp.name, check=True, capture_output=True)
+        return temp, layout, clips
 
     def corner_rgb(self, path, at=None):
         command = [self.FFMPEG, "-v", "error"]
@@ -441,6 +516,111 @@ class SyntheticTournamentE2E(unittest.TestCase):
             self.assertEqual(fallback_job.state, "done", fallback_job.log)
             self.assertTrue(Path(fallback_layout["thumbnail"]).is_file())
             self.assertFalse(os.path.exists(fallback_temp_path))
+
+    def test_5994_moving_intro_and_rallies_keep_one_concat_timing_profile(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / "source-5994.mp4"
+            self.make_motion_video(source, "60000/1001", 440, 5.0)
+            source_info = self.source_info(source)
+            plan = {"matches": [{
+                "metadata": {"playerA":"A", "playerB":"B"},
+                "scoreboard_names": ["A", "B"], "source_info": [source_info],
+                "highlights": [
+                    self.highlight("p1", 0.0, 2.0, 1.5,
+                                   [0,0,0,0], [0,0,1,0]),
+                    self.highlight("p2", 2.0, 4.0, 3.5,
+                                   [0,0,1,0], [0,0,2,0]),
+                ]}]}
+            profile = choose_profile(plan)
+            self.assertEqual(profile["fps_frac"], "60000/1001")
+            temp, layout, clips = self.render_direct(root, plan, profile, "same-profile")
+            try:
+                self.assertEqual(len(clips), 3)
+                for clip in clips:
+                    streams = self.media_details(clip)["streams"]
+                    video = next(s for s in streams if s["codec_type"] == "video")
+                    audio = next(s for s in streams if s["codec_type"] == "audio")
+                    self.assertEqual((video["codec_name"], video["pix_fmt"],
+                                      video["width"], video["height"]),
+                                     ("h264", "yuv420p", 320, 180))
+                    self.assertEqual(video["r_frame_rate"], "60000/1001")
+                    self.assertEqual(video["avg_frame_rate"], "60000/1001")
+                    self.assertEqual(video["time_base"], "1/60000")
+                    self.assertEqual(float(video["start_time"]), 0.0)
+                    self.assertEqual((audio["codec_name"], audio["sample_rate"],
+                                      audio["channels"], audio["channel_layout"]),
+                                     ("aac", "48000", 2, "stereo"))
+                    self.assertEqual(audio["time_base"], "1/48000")
+                    self.assertEqual(float(audio["start_time"]), 0.0)
+
+                final = Path(layout["out"])
+                details = self.media_details(final)
+                streams = details["streams"]
+                video = next(s for s in streams if s["codec_type"] == "video")
+                audio = next(s for s in streams if s["codec_type"] == "audio")
+                expected = INTRO_SECONDS + 2.0 + 2.0
+                actual = float(details["format"]["duration"])
+                self.assertAlmostEqual(actual, expected, delta=.06)
+                self.assertEqual(video["r_frame_rate"], "60000/1001")
+                self.assertEqual(video["time_base"], "1/60000")
+                self.assertAlmostEqual(float(audio["duration"]), expected, delta=.06)
+                self.assertAlmostEqual(self.frame_count(final), expected * 60000/1001,
+                                       delta=3)
+                self.assert_monotonic_dts(final, "v:0")
+                self.assert_monotonic_dts(final, "a:0")
+                self.assertNotEqual(self.frame_rgb(final, 3.25),
+                                    self.frame_rgb(final, 4.25))
+            finally:
+                temp.cleanup()
+
+    def test_mixed_source_render_normalizes_every_segment_to_30fps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            fast, standard = root / "fast.mp4", root / "standard.mp4"
+            self.make_motion_video(fast, "60000/1001", 440, 2.0)
+            self.make_motion_video(standard, "30/1", 660, 2.0)
+            matches = []
+            for index, source in enumerate((fast, standard), 1):
+                matches.append({
+                    "metadata": {"playerA":"A", "playerB":"B"},
+                    "scoreboard_names": ["A", "B"],
+                    "source_info": [self.source_info(source)],
+                    "highlights": [self.highlight(
+                        f"p{index}", 0.0, 2.0, 1.5,
+                        [0,0,index-1,0], [0,0,index,0])],
+                })
+            plan = {"matches": matches}
+            profile = choose_profile(plan)
+            self.assertTrue(profile["normalized"])
+            self.assertEqual((profile["size"], profile["fps_frac"]),
+                             ((1920,1080), "30/1"))
+            temp, layout, clips = self.render_direct(root, plan, profile, "normalized")
+            try:
+                for clip in clips:
+                    video = next(s for s in self.media_details(clip)["streams"]
+                                 if s["codec_type"] == "video")
+                    self.assertEqual((video["width"], video["height"]), (1920,1080))
+                    self.assertEqual(video["r_frame_rate"], "30/1")
+                    self.assertEqual(video["avg_frame_rate"], "30/1")
+                    self.assertEqual(video["time_base"], "1/30000")
+                final = Path(layout["out"])
+                details = self.media_details(final)
+                video = next(s for s in details["streams"]
+                             if s["codec_type"] == "video")
+                audio = next(s for s in details["streams"]
+                             if s["codec_type"] == "audio")
+                expected = INTRO_SECONDS + 2.0 + 2.0
+                self.assertAlmostEqual(float(details["format"]["duration"]),
+                                       expected, delta=.06)
+                self.assertEqual((video["r_frame_rate"], video["time_base"]),
+                                 ("30/1", "1/30000"))
+                self.assertAlmostEqual(float(audio["duration"]), expected, delta=.06)
+                self.assertAlmostEqual(self.frame_count(final), expected * 30, delta=2)
+                self.assert_monotonic_dts(final, "v:0")
+                self.assert_monotonic_dts(final, "a:0")
+            finally:
+                temp.cleanup()
 
 
 if __name__ == "__main__":

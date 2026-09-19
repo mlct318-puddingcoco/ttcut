@@ -3756,7 +3756,8 @@ class Handler(BaseHTTPRequestHandler):
             plan_d = validate_tournament_plan(plan_d, probe, probe_audio, STATE["ffprobe"])
             profile = tournament_profile(plan_d)
             settings = dict(request.get("settings") or {}, size=profile["size"],
-                            fps=profile["fps"], normalized=profile["normalized"])
+                            fps=profile["fps"], fps_frac=profile["fps_frac"],
+                            normalized=profile["normalized"])
             base = custom or self._tournament_default_base(scan, metadata)
             layout = tournament_output_layout(base)
             if custom and os.path.exists(layout["folder"]):
