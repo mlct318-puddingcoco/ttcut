@@ -10,6 +10,11 @@ assert.match(html, /id="leadPad" value="0\.8"/);
 assert.match(html, /id="minCut" value="2\.5"/);
 assert.match(html, /<kbd>H<\/kbd>精彩球/);
 assert.match(html, /id="highlightCount">0<\/b>/);
+assert.match(html, /\.stream\{height:clamp\(260px,36vh,330px\);flex:0 0 clamp\(260px,36vh,330px\);[\s\S]*overflow-y:auto/,
+  'event viewport is independently scrollable and tall enough for review');
+assert.match(html, /\.rail\{[\s\S]*overflow-y:auto/,
+  'narrow-height layouts can scroll to the sections below the event viewport');
+assert.match(html, /\.ev\.selected-point\{[\s\S]*box-shadow:inset 3px 0 var\(--ball\)/);
 assert.match(html, /id="scoreboardStyle"[^>]*>[\s\S]*?<option value="koko" selected>/);
 assert.match(html, /<option value="ttcut">ttcut 原版<\/option>/);
 assert.match(html, /<option value="high" selected>標準<\/option>/);
@@ -27,14 +32,16 @@ assert.match(html, /\.intro-field input:focus[\s\S]*border-color:var\(--ball\)/)
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => events = normalizeEvents(e), events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, undo, paint, handleKeydown, isEditableTarget };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex()}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget };\n})();';
 
 const nodes = new Map();
 function node(id) {
   if (!nodes.has(id)) nodes.set(id, {
     id, value: id === 'fps' ? '30' : '', innerHTML: '', textContent: '',
+    scrollTop: 0, scrollHeight: 900,
     listeners: {}, style: {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
+    querySelectorAll() { return []; },
     classList: {add() {}, remove() {}, toggle() {}},
   });
   return nodes.get(id);
@@ -115,6 +122,8 @@ node('stream').listeners.click({target: target({'.ev': {dataset: {i: '0'}}})});
 assert.equal(video.currentTime, 88.25, 'event row seeks to event time');
 assert.equal(node('tc').textContent, '01:28.25');
 assert.equal(context.testUI.events().length, 1);
+assert.equal(context.testUI.state().selectedPointIndex, -1,
+  'clicking a non-point event clears historical point selection');
 
 const foldState = (count=0) => ({
   cur:{a:0,b:0,gA:0,gB:0,gameNo:1,server:0},
@@ -147,6 +156,54 @@ context.testUI.paint(foldState(4));
 assert.equal(node('highlightCount').textContent, 1);
 assert.match(node('stream').innerHTML, /highlight-badge">★ 精彩球/);
 assert.match(node('stream').innerHTML, /data-highlight="3" aria-pressed="true"/);
+assert.match(node('stream').innerHTML, />★<\/button>/, 'active star has a clear button affordance');
+
+// Historical point selection keeps seek behavior but changes H priority.
+context.testUI.setEvents([
+  {t:10,type:'serve'},{t:14,type:'point',winner:'A'},
+  {t:20,type:'serve'},{t:25,type:'point',winner:'B'}
+]);
+context.testUI.paint(foldState(4));
+node('stream').scrollTop = 126;
+assert.match(node('stream').innerHTML, /title="標記精彩球"[^>]*>☆<\/button>/,
+  'inactive star is visibly clickable and has a discoverability tooltip');
+node('stream').listeners.click({target: target({'.ev': {dataset: {i: '1'}}})});
+assert.equal(video.currentTime, 14, 'historical point click still seeks');
+assert.equal(context.testUI.state().selectedPointIndex, 1, 'historical point is selected');
+assert.equal(node('stream').scrollTop, 126, 'row selection does not jump the event list');
+context.testUI.paint(foldState(4), {mode:'preserve', top:126});
+assert.match(node('stream').innerHTML,
+  /class="ev point selected-point" data-i="1" aria-selected="true"/,
+  'selected point gets its own visual state');
+assert.equal(context.testUI.docPayload().events.some(e => 'selected' in e), false,
+  'selection is not persisted in JSON');
+context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events()[1].highlight, true,
+  'H toggles selected historical point');
+assert.equal(context.testUI.events()[3].highlight, undefined,
+  'selected H does not toggle latest point');
+assert.equal(context.testUI.state().eventScroll.mode, 'preserve');
+assert.equal(context.testUI.state().eventScroll.top, 126,
+  'selected-point H captures historical scroll position');
+context.testUI.paint(foldState(4), context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 126, 'selected-point H preserves scrollTop after repaint');
+assert.equal(node('highlightCount').textContent, 1);
+assert.match(node('stream').innerHTML, /highlight-badge">★ 精彩球/);
+assert.match(node('stream').innerHTML, /highlighted selected-point/,
+  'highlight and selection styling remain distinct and can coexist');
+
+const reloadedSelectedDoc = JSON.parse(JSON.stringify(context.testUI.docPayload()));
+context.testUI.setEvents(reloadedSelectedDoc.events);
+assert.equal(context.testUI.state().selectedPointIndex, -1,
+  'JSON reload starts with no historical UI selection');
+context.testUI.selectPointAt(1);
+
+node('stream').listeners.click({target: target({'.ev': {dataset: {i: '0'}}})});
+assert.equal(context.testUI.state().selectedPointIndex, -1,
+  'serve click cannot leave an unsafe stale point selection');
+context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events()[3].highlight, true,
+  'with no selection H retains latest-completed-rally behavior');
 
 const roundTrip = JSON.parse(JSON.stringify(context.testUI.docPayload()));
 const reopened = context.testUI.normalizeEvents(roundTrip.events);
@@ -222,14 +279,57 @@ context.testUI.setEvents([{t:10,type:'serve'},{t:14,type:'point',winner:'A',high
 context.testUI.paint(foldState(2));
 video.currentTime = 77;
 const star = {dataset:{highlight:'1'}};
+node('stream').scrollTop = 173;
+let starPropagationStopped = false;
 node('stream').listeners.click({target:target({
   '[data-highlight]':star, '.ev':{dataset:{i:'1'}}
-})});
+}), stopPropagation(){starPropagationStopped=true;}});
 assert.equal(context.testUI.events()[1].highlight, undefined, 'mouse star toggles');
 assert.equal(video.currentTime, 77, 'mouse star does not trigger row seek');
-context.testUI.paint(foldState(2));
+assert.equal(starPropagationStopped, true, 'star click propagation is explicitly stopped');
+assert.equal(context.testUI.state().eventScroll.mode, 'preserve');
+assert.equal(context.testUI.state().eventScroll.top, 173,
+  'star untoggle requests a scroll-preserving repaint');
+context.testUI.paint(foldState(2), context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 173, 'star untoggle preserves scrollTop after repaint');
 assert.equal(node('highlightCount').textContent, 0, 'highlight count updates after removal');
 assert.doesNotMatch(node('stream').innerHTML, /highlight-badge/);
+
+node('stream').scrollTop = 173;
+node('stream').listeners.click({target:target({'[data-highlight]':star})});
+assert.equal(context.testUI.events()[1].highlight, true, 'mouse star toggles on');
+assert.equal(context.testUI.state().eventScroll.mode, 'preserve');
+assert.equal(context.testUI.state().eventScroll.top, 173,
+  'star toggle requests a scroll-preserving repaint');
+context.testUI.paint(foldState(2), context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 173, 'star toggle preserves scrollTop after repaint');
+assert.equal(node('highlightCount').textContent, 1);
+assert.match(node('stream').innerHTML, /highlight-badge">★ 精彩球/);
+
+// Candidate review, confirmed serve, and normal scoring all clear old selection.
+context.testUI.setEvents([
+  {t:10,type:'serve'},{t:14,type:'point',winner:'A'},
+  {t:20,type:'serve'},{t:25,type:'point',winner:'B'}
+]);
+context.testUI.selectPointAt(1);
+clickRally({'[data-rally]': row});
+assert.equal(context.testUI.state().selectedPointIndex, -1, 'candidate preview clears selection');
+context.testUI.selectPointAt(1);
+clickRally({'[data-rally]': row, '[data-rally-serve]': {dataset: {rallyServe: '0'}}});
+assert.equal(context.testUI.state().selectedPointIndex, -1, 'confirm serve clears selection');
+context.testUI.setEvents([
+  {t:10,type:'serve'},{t:14,type:'point',winner:'A'},
+  {t:20,type:'serve'},{t:25,type:'point',winner:'B'}
+]);
+context.testUI.selectPointAt(1);
+video.currentTime = 40;
+context.testUI.handleKeydown({key:'S',target:{tagName:'DIV'},preventDefault(){}});
+video.currentTime = 44;
+context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().selectedPointIndex, -1, 'new scoring clears selection');
+context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().at(-1).highlight, true,
+  'H naturally targets the newly completed rally after scoring');
 
 context.testUI.setEvents([{t:1.8,type:'serve'},{t:2.7,type:'point',winner:'B',highlight:true}]);
 const crossFile = context.testUI.normalizeEvents(context.testUI.docPayload().events);
@@ -238,6 +338,7 @@ assert.equal(crossFile[1].highlight, true, 'global-time highlight reloads unchan
 context.testUI.clearMatch();
 assert.equal(context.testUI.events().length, 0, 'new match clears highlights with events');
 assert.equal(context.testUI.events().some(e => e.highlight), false);
+assert.equal(context.testUI.state().selectedPointIndex, -1, 'new match clears UI selection');
 
 node('quality').value = 'max';
 node('scoreboardStyle').value = 'koko';

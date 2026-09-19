@@ -1402,7 +1402,7 @@ HTML = r"""<meta charset="utf-8">
   .legend kbd{font-family:var(--mono);color:var(--ink);margin-right:5px}
 
   .rail{border-left:1px solid var(--line-soft);display:flex;flex-direction:column;
-    min-height:0;background:var(--panel)}
+    min-height:0;overflow-y:auto;background:var(--panel)}
   .board{padding:16px 16px 12px;border-bottom:1px solid var(--line-soft)}
   .cards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
   .card{position:relative;background:var(--table);border:1px solid var(--line-soft);
@@ -1424,12 +1424,18 @@ HTML = r"""<meta charset="utf-8">
     text-transform:uppercase;color:var(--ink-dim)}
   .streammeta{display:flex;gap:10px;align-items:center}
   .streammeta .highlights{color:var(--warn)}
-  .stream{flex:1;overflow-y:auto;min-height:80px}
+  .stream{height:clamp(260px,36vh,330px);flex:0 0 clamp(260px,36vh,330px);
+    overflow-y:auto;min-height:260px}
   .ev{display:grid;grid-template-columns:60px 1fr auto auto 25px 18px;gap:7px;align-items:center;
     padding:6px 14px;border-bottom:1px solid rgba(32,72,110,.5);cursor:pointer;font-size:12.5px}
   .ev:hover{background:var(--table-2)}
   .ev.highlighted{background:rgba(255,194,77,.055)}
   .ev.highlighted:hover{background:rgba(255,194,77,.095)}
+  .ev.selected-point{background:rgba(255,122,24,.09);
+    box-shadow:inset 3px 0 var(--ball),inset 0 0 0 1px rgba(255,122,24,.42)}
+  .ev.selected-point:hover{background:rgba(255,122,24,.14)}
+  .ev.highlighted.selected-point{background:linear-gradient(90deg,
+    rgba(255,122,24,.12),rgba(255,194,77,.075))}
   .ev time{font-family:var(--mono);font-size:11.5px;color:var(--ink-dim)}
   .ev .lbl{display:flex;align-items:center;gap:7px;min-width:0}
   .ev .dot{width:6px;height:6px;border-radius:50%;background:var(--line);flex:none}
@@ -1439,9 +1445,12 @@ HTML = r"""<meta charset="utf-8">
   .ev .sc em{color:var(--warn);font-style:normal}
   .ev .highlight-badge{border:1px solid rgba(255,194,77,.55);border-radius:3px;
     padding:1px 5px;color:var(--warn);font-size:10px;white-space:nowrap}
-  .ev .star{border:0;background:none;color:var(--ink-dim);cursor:pointer;padding:2px;
-    font-size:16px;line-height:1}
-  .ev .star:hover,.ev .star[aria-pressed=true]{color:var(--warn)}
+  .ev .star{width:25px;height:25px;border:1px solid var(--line);border-radius:4px;
+    background:rgba(255,255,255,.025);color:var(--ink-dim);cursor:pointer;padding:0;
+    display:grid;place-items:center;font-size:16px;line-height:1}
+  .ev .star:hover{border-color:var(--warn);background:rgba(255,194,77,.11);color:var(--warn)}
+  .ev .star[aria-pressed=true]{border-color:rgba(255,194,77,.6);
+    background:rgba(255,194,77,.09);color:var(--warn)}
   .ev .star-space{width:25px}
   .ev .kill{border:0;background:none;color:var(--ink-dim);cursor:pointer;padding:0 3px;font-size:15px}
   .ev .kill:hover{color:var(--ball)}
@@ -1756,6 +1765,8 @@ HTML = r"""<meta charset="utf-8">
   let rallyCandidates = [], rallyDiagnostics = null, rallyBusy = false;
   let roi = null, roiSelecting = false, roiDrag = null;
   let matchSerial = 0;
+  let selectedPointEvent = null;
+  let pendingEventScroll = {mode:'latest'};
 
   const num = (id, d) => { const v = +$(id).value; return isFinite(v) ? v : d; };
   const fps    = () => Math.max(1, num('fps', 30));
@@ -1943,7 +1954,7 @@ HTML = r"""<meta charset="utf-8">
     srcPath = ''; srcName = ''; outPath = ''; customOutput = false;
     sources = []; activeSegment = 0; pendingSeek = null; pendingPlay = false;
     sourceGeometryMismatch = false; separateRois = false; rois = [];
-    outputSuggestionSeq++; events = [];
+    outputSuggestionSeq++; events = []; selectedPointEvent = null;
     roi = null; roiSelecting = false; roiDrag = null;
     rallyCandidates = []; rallyDiagnostics = null; rallyBusy = false;
     $('nameA').value = '選手 A'; $('nameB').value = '選手 B';
@@ -2244,18 +2255,44 @@ HTML = r"""<meta charset="utf-8">
   });
 
   /* ───────────────────────── 事件 */
+  function clearSelectedPoint() {
+    selectedPointEvent = null;
+    syncSelectedPointRow();
+  }
+  function selectedPointIndex() {
+    const index = events.indexOf(selectedPointEvent);
+    if (index < 0 || !completedPointIndexes().completed.has(index)) return -1;
+    return index;
+  }
+  function selectPointAt(index) {
+    selectedPointEvent = completedPointIndexes().completed.has(index) ? events[index] : null;
+    syncSelectedPointRow();
+  }
+  function syncSelectedPointRow() {
+    const stream = $('stream');
+    if (!stream || !stream.querySelectorAll) return;
+    const selected = selectedPointIndex();
+    stream.querySelectorAll('.ev').forEach((row, index) => {
+      const on = index === selected;
+      row.classList.toggle('selected-point', on);
+      if (on) row.setAttribute('aria-selected', 'true');
+      else row.removeAttribute('aria-selected');
+    });
+  }
   function add(type, winner) {
     if (!video) return;
+    clearSelectedPoint();
     const t = Math.round(now() * fps()) / fps();
     events.push(winner === undefined ? {t, type} : {t, type, winner});
     events.sort((a,b) => a.t - b.t);
-    refresh();
+    refresh({eventScroll:'latest'});
   }
   function undo() {
     if (!events.length) return;
+    clearSelectedPoint();
     let idx = 0;
     for (let i = 1; i < events.length; i++) if (events[i].t >= events[idx].t) idx = i;
-    events.splice(idx, 1); refresh();
+    events.splice(idx, 1); refresh({eventScroll:'latest'});
   }
 
   function completedPointIndexes(list=events) {
@@ -2280,7 +2317,8 @@ HTML = r"""<meta charset="utf-8">
     }
     event.highlight = event.highlight !== true;
     if (!event.highlight) delete event.highlight;
-    refresh();
+    // Highlight edits redraw every row but must not inherit live-scoring autoscroll.
+    refresh({eventScroll:'preserve'});
     return true;
   }
 
@@ -2296,6 +2334,13 @@ HTML = r"""<meta charset="utf-8">
       return false;
     }
     return toggleHighlightAt(indexes[indexes.length - 1]);
+  }
+
+  function toggleSelectedOrLatestHighlight() {
+    const selected = selectedPointIndex();
+    if (selected >= 0) return toggleHighlightAt(selected);
+    selectedPointEvent = null;
+    return toggleLatestHighlight();
   }
 
   /* ───────────────────────── Rally Detection v0.2.3
@@ -2400,10 +2445,11 @@ HTML = r"""<meta charset="utf-8">
     if (!row || !video) return;
     const candidate = rallyCandidates[+row.dataset.rally];
     if (!candidate) return;
+    clearSelectedPoint();
     if (use) {
       const t = Math.round(candidate.start * fps()) / fps();
       events.push({t, type: 'serve'}); events.sort((a,b) => a.t - b.t);
-      paintRallies(); refresh();
+      paintRallies(); refresh({eventScroll:'latest'});
       return;
     }
     // The whole candidate list lives inside #rallyBox (<details>). Only the
@@ -2414,13 +2460,19 @@ HTML = r"""<meta charset="utf-8">
 
   /* ───────────────────────── 向 Python 要計分結果 */
   let seq = 0, timer = null;
-  function refresh() {
+  function refresh({eventScroll='latest'}={}) {
     paintRallies();
+    // Live event creation follows the newest row; historical Highlight edits
+    // opt into preserve so the shared rerender cannot move a reviewer's place.
+    pendingEventScroll = eventScroll === 'preserve'
+      ? {mode:'preserve', top:$('stream').scrollTop}
+      : {mode:'latest'};
     clearTimeout(timer);
     timer = setTimeout(doRefresh, 50);
   }
   async function doRefresh() {
     const mine = ++seq;
+    const eventScroll = pendingEventScroll;
     $('cap').disabled = deuce() !== 'capped';
     try {
       const r = await fetch('/fold', {
@@ -2429,7 +2481,7 @@ HTML = r"""<meta charset="utf-8">
       });
       const st = await r.json();
       if (mine !== seq) return;               // 過期回應直接丟掉
-      paint(st);
+      paint(st, eventScroll);
       banner(null);
     } catch (e) {
       banner('連不到本機服務，請確認終端機視窗還開著。');
@@ -2437,7 +2489,7 @@ HTML = r"""<meta charset="utf-8">
   }
 
   /* ───────────────────────── 畫面 */
-  function paint(st) {
+  function paint(st, eventScroll={mode:'latest'}) {
     const nm = names(), cur = st.cur;
     $('whoA').textContent = nm[0]; $('whoB').textContent = nm[1];
     $('ptsA').textContent = cur.a;  $('ptsB').textContent = cur.b;
@@ -2466,12 +2518,13 @@ HTML = r"""<meta charset="utf-8">
         prevServe = e.type === 'serve';
         const sc = s ? (s.won ? `<em>${s.gA}–${s.gB} 局</em>` : `${s.a}–${s.b}`) : '';
         const highlighted = e.type === 'point' && e.highlight === true;
+        const selected = e === selectedPointEvent && completed.has(i);
         const badge = highlighted ? '<span class="highlight-badge">★ 精彩球</span>' : '';
         const star = completed.has(i)
           ? `<button class="star" data-highlight="${i}" aria-pressed="${highlighted}"
-              title="${highlighted ? '取消精彩球' : '標記精彩球'}" aria-label="${highlighted ? '取消精彩球' : '標記精彩球'}">★</button>`
+              title="${highlighted ? '取消精彩球' : '標記精彩球'}" aria-label="${highlighted ? '取消精彩球' : '標記精彩球'}">${highlighted ? '★' : '☆'}</button>`
           : '<span class="star-space"></span>';
-        html += `<div class="ev ${cls}${highlighted ? ' highlighted' : ''}" data-i="${i}">
+        html += `<div class="ev ${cls}${highlighted ? ' highlighted' : ''}${selected ? ' selected-point' : ''}" data-i="${i}"${selected ? ' aria-selected="true"' : ''}>
           <time>${fmt(e.t)}</time>
           <span class="lbl"><i class="dot"></i>${label}${badge}</span>
           <span class="sc">${s && s.won ? `${s.a}–${s.b}` : ''}</span>
@@ -2481,7 +2534,8 @@ HTML = r"""<meta charset="utf-8">
         </div>`;
       });
       stream.innerHTML = html;
-      stream.scrollTop = stream.scrollHeight;
+      if (eventScroll.mode === 'preserve') stream.scrollTop = eventScroll.top;
+      else stream.scrollTop = stream.scrollHeight;
     }
 
     const c = st.cuts || {};
@@ -2559,11 +2613,23 @@ HTML = r"""<meta charset="utf-8">
 
   $('stream').addEventListener('click', e => {
     const h = e.target.closest('[data-highlight]');
-    if (h) { toggleHighlightAt(+h.dataset.highlight); return; }
+    if (h) {
+      if (e.stopPropagation) e.stopPropagation();
+      toggleHighlightAt(+h.dataset.highlight);
+      return;
+    }
     const k = e.target.closest('[data-kill]');
-    if (k) { events.splice(+k.dataset.kill, 1); refresh(); return; }
+    if (k) {
+      clearSelectedPoint(); events.splice(+k.dataset.kill, 1);
+      refresh({eventScroll:'latest'}); return;
+    }
     const row = e.target.closest('.ev');
-    if (row && video) { video.pause(); seekGlobal(events[+row.dataset.i].t); tick(); }
+    if (row && video) {
+      const index = +row.dataset.i;
+      if (events[index] && events[index].type === 'point') selectPointAt(index);
+      else clearSelectedPoint();
+      video.pause(); seekGlobal(events[index].t); tick();
+    }
   });
 
   function paintAccent() {
@@ -2597,7 +2663,7 @@ HTML = r"""<meta charset="utf-8">
       case 's': case 'S': add('serve'); break;
       case 'a': case 'A': add('point', 'A'); break;
       case 'b': case 'B': add('point', 'B'); break;
-      case 'h': case 'H': toggleLatestHighlight(); break;
+      case 'h': case 'H': toggleSelectedOrLatestHighlight(); break;
       case 'n': case 'N': add('game'); break;
       case 'z': case 'Z': undo(); break;
       case '1': setRate(0.5); break;
@@ -2719,6 +2785,7 @@ HTML = r"""<meta charset="utf-8">
           $('saveAs').disabled = false; $('defaultOut').disabled = false;
           mountVideo(); updateOutputSuggestion();
         }
+        selectedPointEvent = null;
         events = normalizeEvents(d.events);
         if (d.fps) $('fps').value = d.fps;
         if (d.players) { $('nameA').value = d.players.A; $('nameB').value = d.players.B; }

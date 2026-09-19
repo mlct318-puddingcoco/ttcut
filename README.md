@@ -77,10 +77,10 @@ The **Scoreboard style** selector offers **Koko color table** (the default for n
 | `S` | serve | `⇧←` `⇧→` | step 1 second |
 | `A` | point to A | `⌥←` `⌥→` | step 5 seconds |
 | `B` | point to B | `1` `2` `3` `4` | 0.5× / 1× / 1.5× / 2× |
-| `H` | toggle latest completed rally highlight | `Z` | undo the latest event |
+| `H` | toggle selected/latest completed rally highlight | `Z` | undo the latest event |
 | `N` | new game |  |  |
 
-`H` only targets the latest rally that has both a serve and a point. An open serve must be scored first. Point rows also have a star control; highlighted rows show `★ 精彩球`, and the header shows the live count. Clicking elsewhere on an event row still seeks; `×` deletes it. The flag lives on the point event itself, for example `{"t": 25.0, "type": "point", "winner": "B", "highlight": true}`. Older JSON without the field loads with zero highlights.
+Clicking a historical point row seeks to it and selects it with an orange accent; `H` then toggles that selected rally. With no selected historical point, `H` still targets the latest rally that has both a serve and a point. Starting a new candidate/serve/point clears the historical selection, and an open serve must be scored first. Point rows also have a bordered star control that toggles without seeking; highlighted rows show `★ 精彩球`, and the header shows the live count. `×` deletes an event. The flag lives on the point event itself, for example `{"t": 25.0, "type": "point", "winner": "B", "highlight": true}`. Selection is UI-only and is never written to JSON; older JSON without the highlight field loads with zero highlights.
 
 ## Match format
 
