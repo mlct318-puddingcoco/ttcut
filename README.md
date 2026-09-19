@@ -23,6 +23,7 @@ You tag the rallies once in a browser, and ttcut does the rest:
 - **Cuts the dead time.** Everything between a point and the next serve — picking the ball up, walking back, towelling off — is removed. A 40-minute recording usually lands somewhere around 12–15 minutes.
 - **Burns in a scoreboard.** Names, games, and the running score sit in the corner for the whole film, derived from your tags rather than typed in by hand.
 - **Ends on a summary card.** Optionally freezes the last frame and draws a per-game score table plus three metrics for each player.
+- **Marks highlights as you score.** After `A` or `B`, press `H` to flag that completed rally in the same tags JSON for a future tournament compilation.
 
 Tagging is manual on purpose. There is no ball tracking to misfire, and no model to download — you press `S` on the serve and `A`/`B` on the point, which is about as fast as watching the match anyway.
 
@@ -54,7 +55,7 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 
 1. **Load video** for one recording, or **Load multiple videos…** for consecutive files from the same match. Multi-file selection starts in natural filename order; the file list shows each duration, global start/end, and total length. Use ↑/↓ before tagging to correct the order.
 2. Type the two player names and pick who serves first.
-3. Play, and tag: `S` the instant the ball leaves the bat on a serve, `A` or `B` when the point is won.
+3. Play, and tag: `S` the instant the ball leaves the bat on a serve, `A` or `B` when the point is won. Press `H` if that completed rally belongs in the highlights; press it again to remove the flag.
 4. Tick **Stats board** if you want the summary card at the end.
 5. **Render video.** Standard quality is recommended. The CPU based maximum quality option is much slower.
 6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
@@ -76,9 +77,10 @@ The **Scoreboard style** selector offers **Koko color table** (the default for n
 | `S` | serve | `⇧←` `⇧→` | step 1 second |
 | `A` | point to A | `⌥←` `⌥→` | step 5 seconds |
 | `B` | point to B | `1` `2` `3` `4` | 0.5× / 1× / 1.5× / 2× |
-| `N` | new game | `Z` | undo the latest event |
+| `H` | toggle selected/latest completed rally highlight | `Z` | undo the latest event |
+| `N` | new game |  |  |
 
-Click any event in the list to jump to it; click `×` to delete it.
+Clicking a historical point row seeks to it and selects it with an orange accent; `H` then toggles that selected rally. With no selected historical point, `H` still targets the latest rally that has both a serve and a point. Starting a new candidate/serve/point clears the historical selection, and an open serve must be scored first. Point rows also have a bordered star control that toggles without seeking; highlighted rows show `★ 精彩球`, and the header shows the live count. `×` deletes an event. The flag lives on the point event itself, for example `{"t": 25.0, "type": "point", "winner": "B", "highlight": true}`. Selection is UI-only and is never written to JSON; older JSON without the highlight field loads with zero highlights.
 
 ## Match format
 
