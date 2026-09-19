@@ -7,11 +7,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tournament_highlights import (
-    TournamentError, apply_review, choose_profile, discover_tag_files,
-    manifest_for, output_layout, output_stem, pair_highlights, prepare_render,
-    run_commands, scan_tournament, validate_plan,
+    COVER_BLUR, COVER_OFFSET_SECONDS, COVER_TREATMENT, INTRO_SECONDS,
+    TournamentError, apply_review, choose_profile, cover_frame_selection,
+    discover_tag_files, extract_cover_frame, manifest_for, output_layout,
+    output_stem, pair_highlights, prepare_render, run_commands, scan_tournament,
+    validate_plan,
 )
 from ttcut_v2_3 import (DEFAULT_ACCENT, FONT_NAME, FONT_NUM, Job, ass_colour,
                         build_ass, fold_full, probe, probe_audio, read_format,
@@ -90,7 +93,47 @@ class TournamentDiscoveryTests(unittest.TestCase):
             "highlight_order": {"a": ["1:2.000", "0:1.000"]}})
         self.assertEqual([m["id"] for m in plan["matches"]], ["b", "a"])
         self.assertEqual([h["point_id"] for h in plan["matches"][1]["highlights"]], ["1:2.000"])
+        self.assertEqual([h["point_id"] for m in plan["matches"] for h in m["highlights"]],
+                         ["0:3.000", "1:2.000"])
         self.assertEqual(scan, original)
+
+    def test_cover_uses_first_selected_item_after_review_reorder_and_uncheck(self):
+        scan = {"matches": [
+            {"id": "a", "highlights": [{"point_id": "a1", "selected": True},
+                                          {"point_id": "a2", "selected": True}]},
+            {"id": "b", "highlights": [{"point_id": "b1", "selected": True}]},
+        ]}
+        plan = apply_review(scan, {"match_order": ["b", "a"],
+            "selected": {"b": {"b1": False}, "a": {"a1": False, "a2": True}},
+            "highlight_order": {"a": ["a2", "a1"]}})
+        plan["matches"][0]["highlights"][0].update(start=4.0, end=7.0)
+        plan["matches"][0]["source_info"] = [
+            {"path": "/original-a.mp4", "offset": 0.0, "end": 10.0}]
+        cover = cover_frame_selection(plan)
+        self.assertEqual(cover["item"]["point_id"], "a2")
+        self.assertEqual(cover["source"]["path"], "/original-a.mp4")
+        self.assertAlmostEqual(cover["global_time"], 4.0 + COVER_OFFSET_SECONDS)
+        self.assertAlmostEqual(cover["local_time"], 4.0 + COVER_OFFSET_SECONDS)
+
+    def test_cover_global_time_resolves_single_and_multifile_boundary(self):
+        single = {"matches": [{"highlights": [{"point_id": "p", "start": .5, "end": 3.0}],
+                               "source_info": [{"path": "one.mp4", "offset": 0.0,
+                                                "end": 4.0}]}]}
+        cover = cover_frame_selection(single)
+        self.assertEqual(cover["source_index"], 0)
+        self.assertAlmostEqual(cover["global_time"], 1.75)
+        self.assertAlmostEqual(cover["local_time"], 1.75)
+
+        boundary = {"matches": [{"highlights": [{"point_id": "p", "start": .25,
+                                                   "end": 2.8}],
+                                  "source_info": [
+                                      {"path": "one.mp4", "offset": 0.0, "end": 1.5},
+                                      {"path": "two.mp4", "offset": 1.5, "end": 3.0}]}]}
+        cover = cover_frame_selection(boundary)
+        self.assertEqual(cover["source_index"], 1)
+        self.assertEqual(cover["source"]["path"], "two.mp4")
+        self.assertAlmostEqual(cover["global_time"], 1.5)
+        self.assertAlmostEqual(cover["local_time"], 0.0)
 
     def test_scoreboard_states_cover_mid_game_later_game_and_winner(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -153,7 +196,83 @@ class TournamentDiscoveryTests(unittest.TestCase):
                          {"size":(1920,1080),"fps":30.0,"normalized":True})
         manifest = manifest_for(plan, metadata, {"quality":"high"})
         self.assertEqual(manifest["type"], "koko-highlight-project")
+        self.assertEqual(manifest["presentation"]["intro_seconds"], INTRO_SECONDS)
+        self.assertFalse(manifest["presentation"]["match_cards"])
+        self.assertFalse(manifest["presentation"]["scoreboard_on_intro"])
         self.assertNotIn("events", json.dumps(manifest))
+
+    def test_cover_extraction_failure_uses_dark_intro_and_thumbnail(self):
+        plan = {"matches": [{
+            "metadata": {"playerA": "甲", "playerB": "乙"},
+            "scoreboard_names": ["甲", "乙"],
+            "source_info": [{"path": "/missing.mp4", "offset": 0.0, "end": 3.0}],
+            "highlights": [{"point_id": "p", "start": 0.0, "end": 2.0,
+                            "duration": 2.0, "point_time": 1.0,
+                            "score_before": [0, 0, 0, 0],
+                            "score_after": [0, 0, 1, 0]}]}]}
+        metadata = {"tournament": "盃賽", "title": "精彩好球",
+                    "protagonist": "甲", "school": "學校"}
+        layout = {"out": "/tmp/out.mp4", "thumbnail": "/tmp/thumb.jpg"}
+        with mock.patch("tournament_highlights.subprocess.run",
+                        side_effect=subprocess.CalledProcessError(1, ["ffmpeg"])):
+            temp, commands, clips = prepare_render(
+                plan, metadata, {"quality": "fast", "size": (320, 180), "fps": 30},
+                layout, "ffmpeg", build_ass, FONT_NAME, FONT_NUM,
+                ass_colour(DEFAULT_ACCENT), "libx264")
+        try:
+            self.assertEqual(len(clips), 2)  # intro + rally; never a match card
+            self.assertFalse(any("-match.mp4" in str(value)
+                                 for command in commands for value in command))
+            self.assertIn("color=c=#04121F", " ".join(commands[0]))
+            self.assertIn("color=c=#04121F", " ".join(commands[-1]))
+            self.assertIn(f"{INTRO_SECONDS:.3f}", commands[0])
+            self.assertNotIn("score.ass", " ".join(commands[0]))
+        finally:
+            temp.cleanup()
+
+    def test_real_cover_is_shared_by_intro_and_thumbnail_then_cleaned(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.mp4"; source.touch()
+            plan = {"matches": [{
+                "metadata": {"playerA": "甲", "playerB": "乙"},
+                "scoreboard_names": ["甲", "乙"],
+                "source_info": [{"path": str(source), "offset": 0.0, "end": 3.0}],
+                "highlights": [{"point_id": "p", "start": 0.0, "end": 2.0,
+                                "duration": 2.0, "point_time": 1.0,
+                                "score_before": [0, 0, 0, 0],
+                                "score_after": [0, 0, 1, 0]}]}]}
+            layout = {"out": "/tmp/out.mp4", "thumbnail": "/tmp/thumb.jpg"}
+
+            def fake_extract(_ffmpeg, _selection, path):
+                Path(path).write_bytes(b"png")
+                return str(path)
+
+            with mock.patch("tournament_highlights.extract_cover_frame",
+                            side_effect=fake_extract):
+                temp, commands, clips = prepare_render(
+                    plan, {"title": "精彩好球"},
+                    {"quality": "fast", "size": (320, 180), "fps": 30}, layout,
+                    "ffmpeg", build_ass, FONT_NAME, FONT_NUM,
+                    ass_colour(DEFAULT_ACCENT), "libx264")
+            cover_path = str(Path(temp.name) / "cover-frame.png")
+            self.assertIn(cover_path, commands[0])
+            self.assertIn(cover_path, commands[-1])
+            self.assertIn(COVER_BLUR, " ".join(commands[0]))
+            self.assertIn(COVER_TREATMENT, " ".join(commands[-1]))
+            self.assertEqual(len(clips), 2)
+            self.assertTrue(Path(cover_path).is_file())
+            temp.cleanup()
+            self.assertFalse(Path(cover_path).exists())
+
+    def test_extract_cover_frame_failure_removes_partial_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "cover.png"
+            target.write_bytes(b"partial")
+            selection = {"local_time": .5, "source": {"path": "/bad.mp4"}}
+            with mock.patch("tournament_highlights.subprocess.run",
+                            side_effect=subprocess.CalledProcessError(1, ["ffmpeg"])):
+                self.assertIsNone(extract_cover_frame("ffmpeg", selection, target))
+            self.assertFalse(target.exists())
 
 
 @unittest.skipUnless(Path("/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg").is_file(),
@@ -169,6 +288,16 @@ class SyntheticTournamentE2E(unittest.TestCase):
                         "-c:v","libx264","-pix_fmt","yuv420p","-c:a","aac","-shortest",str(path)],
                        check=True, capture_output=True)
 
+    def corner_rgb(self, path, at=None):
+        command = [self.FFMPEG, "-v", "error"]
+        if at is not None:
+            command += ["-ss", str(at)]
+        command += ["-i", str(path), "-vf", "crop=1:1:0:0,format=rgb24",
+                    "-frames:v", "1", "-f", "rawvideo", "pipe:1"]
+        pixel = subprocess.run(command, check=True, capture_output=True).stdout
+        self.assertGreaterEqual(len(pixel), 3)
+        return tuple(pixel[:3])
+
     def test_two_match_three_highlight_render_with_multifile_boundary(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "盃賽"; a = root / "A"; b = root / "B"
@@ -181,8 +310,16 @@ class SyntheticTournamentE2E(unittest.TestCase):
             write_doc(a/"ttcut-data"/"A.tags.json", doc("A-1.mp4",events=events_a,sources=[str(a1),str(a2)]))
             write_doc(b/"ttcut-data"/"B.tags.json", doc("B.mp4",players=("許宸愷（光復國小）","王小明（東園國小）"),events=events_b))
             scan = scan_tournament(root, fold_full, read_format)
-            plan = apply_review(scan,{})
+            ids = {match["id"]: match for match in scan["matches"]}
+            a_id = next(key for key in ids if key.startswith("A/"))
+            b_id = next(key for key in ids if key.startswith("B/"))
+            first_a = ids[a_id]["highlights"][0]["point_id"]
+            plan = apply_review(scan, {"match_order": [b_id, a_id],
+                "selected": {a_id: {first_a: False}}})
             plan = validate_plan(plan, probe, probe_audio, self.FFPROBE)
+            cover = cover_frame_selection(plan)
+            self.assertEqual(cover["match"]["id"], b_id)
+            self.assertEqual(cover["source"]["path"], str(bv))
             profile = choose_profile(plan)
             metadata = scan["metadata"]
             layout = output_layout(str(root / (output_stem(metadata,safe_filename_part)+".mp4")))
@@ -200,14 +337,40 @@ class SyntheticTournamentE2E(unittest.TestCase):
             self.assertTrue(Path(layout["thumbnail"]).is_file())
             thumb = probe(layout["thumbnail"],self.FFPROBE)
             self.assertEqual((thumb["w"],thumb["h"]),(1280,720))
-            self.assertEqual(len(clips),6)  # intro + two cards + three rallies
+            intro_rgb = self.corner_rgb(layout["out"], .5)
+            thumb_rgb = self.corner_rgb(layout["thumbnail"])
+            self.assertGreater(intro_rgb[1], max(intro_rgb[0], intro_rgb[2]))
+            self.assertGreater(thumb_rgb[1], max(thumb_rgb[0], thumb_rgb[2]))
+            self.assertEqual(len(clips),3)  # intro + two selected rallies; no match cards
+            self.assertFalse(any("-match.mp4" in str(path) for path in clips))
             saved = json.loads(Path(layout["manifest"]).read_text())
-            self.assertEqual([len(m["selected_points"]) for m in saved["matches"]],[2,1])
+            self.assertEqual([len(m["selected_points"]) for m in saved["matches"]],[1,1])
+            self.assertFalse(saved["presentation"]["match_cards"])
+            self.assertEqual(saved["presentation"]["cover"]["selected_point_id"],
+                             plan["matches"][0]["highlights"][0]["point_id"])
             media = probe(layout["out"],self.FFPROBE)
-            self.assertGreater(media["duration"],7)
+            self.assertGreater(media["duration"],5)
+            self.assertLess(media["duration"],8)
             self.assertIsNotNone(probe_audio(layout["out"],self.FFPROBE))
             leftovers = [p.name for p in root.iterdir() if p.name in ("temp.mp4","concat.txt","filter.txt")]
             self.assertEqual(leftovers,[])
+
+            fallback_layout = output_layout(str(root / "fallback.mp4"))
+            os.makedirs(fallback_layout["folder"])
+            with mock.patch("tournament_highlights.extract_cover_frame", return_value=None):
+                fallback_temp, fallback_commands, _ = prepare_render(
+                    plan, metadata,
+                    {"quality":"fast", "size":profile["size"], "fps":profile["fps"]},
+                    fallback_layout, self.FFMPEG, build_ass, FONT_NAME, FONT_NUM,
+                    ass_colour(DEFAULT_ACCENT), "libx264")
+            fallback_job = Job(fallback_layout["out"], len(fallback_commands))
+            fallback_temp_path = fallback_temp.name
+            run_commands(fallback_job, fallback_commands, fallback_temp.name, fallback_temp,
+                         fallback_layout["manifest"],
+                         manifest_for(plan, metadata, {"quality":"fast"}))
+            self.assertEqual(fallback_job.state, "done", fallback_job.log)
+            self.assertTrue(Path(fallback_layout["thumbnail"]).is_file())
+            self.assertFalse(os.path.exists(fallback_temp_path))
 
 
 if __name__ == "__main__":

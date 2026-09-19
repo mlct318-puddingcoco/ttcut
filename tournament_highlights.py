@@ -20,6 +20,11 @@ from match_io import make_sources
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".avi", ".mkv")
 PROJECT_TYPE = "koko-highlight-project"
 PROJECT_VERSION = 1
+INTRO_SECONDS = 3.0
+COVER_OFFSET_SECONDS = 1.25
+COVER_END_GUARD_SECONDS = 0.05
+COVER_BLUR = "boxblur=6:1"
+COVER_TREATMENT = "eq=brightness=-0.18:saturation=0.90,drawbox=color=black@0.28:t=fill"
 
 
 class TournamentError(ValueError):
@@ -311,12 +316,20 @@ def choose_profile(plan):
 
 
 def manifest_for(plan, metadata, settings):
+    cover = cover_frame_selection(plan)
     return dict(type=PROJECT_TYPE, version=PROJECT_VERSION,
                 matches=[dict(tags=m["tags"],
                               selected_points=[h["point_time"] for h in m["highlights"]],
                               selected_point_ids=[h["point_id"] for h in m["highlights"]])
                          for m in plan["matches"]],
-                metadata=dict(metadata), output=dict(settings))
+                metadata=dict(metadata), output=dict(settings),
+                presentation=dict(intro_seconds=INTRO_SECONDS, match_cards=False,
+                                  scoreboard_on_intro=False,
+                                  cover=(dict(source=cover["source"]["path"],
+                                              global_time=cover["global_time"],
+                                              local_time=cover["local_time"],
+                                              selected_point_id=cover["item"]["point_id"])
+                                         if cover else None)))
 
 
 def _escape_concat(path):
@@ -331,29 +344,92 @@ def _encoder_args(quality, encoder, bitrate="20M"):
             "-bufsize", "40M", "-pix_fmt", "yuv420p"]
 
 
-def _write_title_ass(path, metadata, duration, size, separator=False):
-    if separator:
-        data = dict(tournament="", category="", playerA=metadata.get("playerA", ""),
-                    schoolA=metadata.get("schoolA", ""), playerB=metadata.get("playerB", ""),
-                    schoolB=metadata.get("schoolB", ""))
-    else:
-        data = {"lines": [metadata.get("tournament", ""),
-                           metadata.get("title", "精彩好球"),
-                           metadata.get("protagonist", ""),
-                           metadata.get("school", "")]}
+def _write_title_ass(path, metadata, duration, size):
+    data = {"lines": [metadata.get("tournament", ""),
+                       metadata.get("title", "精彩好球"),
+                       metadata.get("protagonist", ""),
+                       metadata.get("school", "")]}
     font = select_font("")
     Path(path).write_text(intro_ass(data, size[0], size[1], duration, font), encoding="utf-8")
     return font
 
 
-def title_command(ffmpeg, out, ass_path, duration, size, fps, quality, encoder):
+def _cover_video_filter(size, ass_path):
     font = select_font("")
     sub = subtitle_filter(os.path.basename(ass_path), font_directory(font))
-    return [ffmpeg, "-y", "-f", "lavfi", "-i",
-            f"color=c=#04121F:s={size[0]}x{size[1]}:r={fps}:d={duration}",
-            "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={duration}",
-            "-vf", sub, *_encoder_args(quality, encoder), "-c:a", "aac", "-b:a", "256k",
+    return (f"scale={size[0]}:{size[1]}:force_original_aspect_ratio=increase,"
+            f"crop={size[0]}:{size[1]},{COVER_BLUR},{COVER_TREATMENT},{sub}")
+
+
+def title_command(ffmpeg, out, ass_path, duration, size, fps, quality, encoder,
+                  background=None):
+    if background:
+        args = [ffmpeg, "-y", "-loop", "1", "-framerate", f"{fps}",
+                "-i", os.path.abspath(background)]
+        video_filter = _cover_video_filter(size, ass_path)
+    else:
+        args = [ffmpeg, "-y", "-f", "lavfi", "-i",
+                f"color=c=#04121F:s={size[0]}x{size[1]}:r={fps}:d={duration}"]
+        video_filter = subtitle_filter(os.path.basename(ass_path),
+                                       font_directory(select_font("")))
+    return [*args, "-f", "lavfi", "-i", f"anullsrc=r=48000:cl=stereo:d={duration}",
+            "-vf", video_filter, "-t", f"{duration:.3f}",
+            *_encoder_args(quality, encoder), "-c:a", "aac", "-b:a", "256k",
             "-shortest", "-movflags", "+faststart", out]
+
+
+def cover_frame_selection(plan):
+    """Resolve the first selected review item to one original source/local time."""
+    for match in plan.get("matches", []):
+        if not match.get("highlights"):
+            continue
+        item = match["highlights"][0]
+        if "start" not in item or "end" not in item:
+            return None
+        start, end = float(item["start"]), float(item["end"])
+        global_time = min(start + COVER_OFFSET_SECONDS,
+                          max(start, end - COVER_END_GUARD_SECONDS))
+        sources = match.get("source_info") or []
+        for index, source in enumerate(sources):
+            if "offset" not in source or "end" not in source:
+                continue
+            is_last = index == len(sources) - 1
+            if source["offset"] <= global_time < source["end"] or (
+                    is_last and source["offset"] <= global_time <= source["end"]):
+                return dict(match=match, item=item, source=source,
+                            source_index=index, global_time=global_time,
+                            local_time=max(0.0, global_time - source["offset"]))
+        return None
+    return None
+
+
+def extract_cover_frame(ffmpeg, selection, path):
+    """Extract one reusable cover frame; failure intentionally selects dark fallback."""
+    if not selection:
+        return None
+    try:
+        subprocess.run([ffmpeg, "-y", "-ss", f"{selection['local_time']:.6f}",
+                        "-i", selection["source"]["path"], "-frames:v", "1", str(path)],
+                       check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       text=True, errors="replace")
+        return str(path) if Path(path).is_file() and Path(path).stat().st_size else None
+    except (OSError, subprocess.CalledProcessError):
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass
+        return None
+
+
+def thumbnail_command(ffmpeg, out, ass_path, background=None):
+    if background:
+        args = [ffmpeg, "-y", "-i", os.path.abspath(background)]
+        video_filter = _cover_video_filter((1280, 720), ass_path)
+    else:
+        args = [ffmpeg, "-y", "-f", "lavfi", "-i", "color=c=#04121F:s=1280x720:d=1"]
+        video_filter = subtitle_filter(os.path.basename(ass_path),
+                                       font_directory(select_font("")))
+    return [*args, "-vf", video_filter, "-frames:v", "1", "-q:v", "2", out]
 
 
 def _overlaps(sources, start, end):
@@ -401,21 +477,15 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
     quality = settings.get("quality", "high")
     clips, commands = [], []
 
+    cover = extract_cover_frame(ffmpeg, cover_frame_selection(plan), work / "cover-frame.png")
     overall = work / "000-overall.mp4"
     overall_ass = work / "000-overall.ass"
-    _write_title_ass(overall_ass, metadata, 3.0, size)
-    commands.append(title_command(ffmpeg, str(overall), str(overall_ass), 3.0,
-                                  size, fps, quality, encoder))
+    _write_title_ass(overall_ass, metadata, INTRO_SECONDS, size)
+    commands.append(title_command(ffmpeg, str(overall), str(overall_ass), INTRO_SECONDS,
+                                  size, fps, quality, encoder, cover))
     clips.append(overall)
     sequence = 1
     for match in plan["matches"]:
-        card = work / f"{sequence:03d}-match.mp4"
-        card_ass = work / f"{sequence:03d}-match.ass"
-        _write_title_ass(card_ass, match["metadata"], 1.0, size, separator=True)
-        commands.append(title_command(ffmpeg, str(card), str(card_ass), 1.0,
-                                      size, fps, quality, encoder))
-        clips.append(card)
-        sequence += 1
         names = match.get("scoreboard_names") or [
             match["metadata"].get("playerA") or "A",
             match["metadata"].get("playerB") or "B"]
@@ -438,11 +508,7 @@ def prepare_render(plan, metadata, settings, layout, ffmpeg, build_ass,
                      "-c", "copy", "-movflags", "+faststart", layout["out"]])
     thumb_ass = work / "thumbnail.ass"
     _write_title_ass(thumb_ass, metadata, 1.0, (1280, 720))
-    # JPEG cannot use a video encoder; keep the common intro composition only.
-    thumb = [ffmpeg, "-y", "-f", "lavfi", "-i", "color=c=#04121F:s=1280x720:d=1",
-             "-vf", subtitle_filter(thumb_ass.name, font_directory(select_font(""))),
-             "-frames:v", "1", "-q:v", "2", layout["thumbnail"]]
-    commands.append(thumb)
+    commands.append(thumbnail_command(ffmpeg, layout["thumbnail"], str(thumb_ass), cover))
     return tmp, commands, clips
 
 

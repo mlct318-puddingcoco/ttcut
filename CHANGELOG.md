@@ -6,6 +6,15 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.3.1 — Highlight Presentation Polish
+
+- Removed per-match separator cards from tournament compilations while retaining
+  match grouping and all review ordering controls in the Builder.
+- The three-second overall intro and 1280×720 thumbnail now share one frame
+  extracted 1.25 seconds into the first selected rally in final review order.
+  The original competition frame is crop-filled, modestly blurred and darkened;
+  a failed extraction falls back to the existing dark title card.
+
 ## Koko v1.3 — Tournament Highlight Builder
 
 - Added an independent tournament mode that recursively discovers modern and
