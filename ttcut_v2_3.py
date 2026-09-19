@@ -63,13 +63,19 @@ ttcut V2 — 桌球比賽影片：標記、剪去撿球、疊上常駐計分板�
 import argparse, errno, json, math, mimetypes, os, platform, re, shutil, socket, unicodedata
 import subprocess, sys, tempfile, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from intro_card import (FONT_PREFERENCES, installed_families, select_font, intro_duration,
                         intro_ass, intro_has_text, with_intro_filter, thumbnail_command, thumbnail_path,
                         font_directory)
 from match_io import (SourceError, natural_paths, make_sources, source_at,
                       reorder_sources, compatibility_issues, geometry_mismatch,
                       output_layout)
+from tournament_highlights import (
+    TournamentError, apply_review as apply_highlight_review,
+    choose_profile as tournament_profile, manifest_for as highlight_manifest,
+    output_layout as tournament_output_layout, output_stem as tournament_output_stem,
+    prepare_render as prepare_tournament_render, run_commands as run_tournament_commands,
+    scan_tournament, validate_plan as validate_tournament_plan)
 
 try:
     from rally_detection import DetectionError, detect_video
@@ -1128,6 +1134,8 @@ end repeat
 set AppleScript's text item delimiters to linefeed
 return paths as text'''
 
+_MAC_PICK_FOLDER = 'POSIX path of (choose folder with prompt "選擇賽事根目錄")'
+
 
 def native_pick_video():
     """開系統原生檔案對話框，回傳絕對路徑；使用者取消回 None。
@@ -1196,6 +1204,25 @@ def native_save_video(default_path):
         return None
 
 
+def native_pick_folder():
+    """Choose a tournament root with the platform-native folder picker."""
+    try:
+        if IS_MAC:
+            result = subprocess.run(["osascript", "-e", _MAC_PICK_FOLDER],
+                                    capture_output=True, text=True, timeout=300)
+            path = result.stdout.strip() if result.returncode == 0 else ""
+        else:
+            code = ("import tkinter as tk,tkinter.filedialog as fd\n"
+                    "r=tk.Tk();r.withdraw();r.attributes('-topmost',True)\n"
+                    "print(fd.askdirectory(title='選擇賽事根目錄'))")
+            result = subprocess.run([sys.executable, "-c", code],
+                                    capture_output=True, text=True, timeout=300)
+            path = result.stdout.strip() if result.returncode == 0 else ""
+        return os.path.abspath(path) if path and os.path.isdir(path) else None
+    except Exception:
+        return None
+
+
 # ─────────────────────────────────────────── 伺服器狀態
 
 STATE = {
@@ -1205,6 +1232,8 @@ STATE = {
     "ffmpeg": None,
     "ffprobe": "ffprobe",
     "job": None,            # 進行中的渲染
+    "tournament": None,     # 最近一次賽事掃描（不改動一般比賽編輯狀態）
+    "tournament_out": None,
 }
 STATE_LOCK = threading.Lock()
 
@@ -1540,10 +1569,43 @@ HTML = r"""<meta charset="utf-8">
   .intro-legacy p{margin:0;color:var(--ink-dim);font-size:12px;line-height:1.45}
   #introAutofill{margin-top:8px}
 
+  .tournament-panel{position:fixed;inset:0;z-index:20;background:var(--table);
+    color:var(--ink);display:grid;grid-template-rows:auto 1fr}
+  .tournament-panel[hidden]{display:none}
+  .th-head{display:flex;gap:12px;align-items:center;padding:12px 18px;background:var(--panel);
+    border-bottom:1px solid var(--line-soft)}
+  .th-head h1{font-family:var(--disp);font-size:20px;letter-spacing:.08em;margin:0}
+  .th-body{display:grid;grid-template-columns:minmax(420px,1fr) minmax(330px,42%);
+    gap:16px;min-height:0;padding:16px}
+  .th-list,.th-side{min-height:0;overflow:auto;border:1px solid var(--line-soft);
+    border-radius:5px;background:var(--panel);padding:14px}
+  .th-summary{display:flex;gap:18px;align-items:baseline;margin:12px 0;color:var(--ink-dim)}
+  .th-summary strong{color:var(--ink);font-family:var(--mono)}
+  .th-match{border:1px solid var(--line-soft);border-radius:4px;margin:9px 0;background:var(--table)}
+  .th-match-head{display:flex;align-items:center;gap:7px;padding:9px 10px;border-bottom:1px solid var(--line-soft)}
+  .th-match-head b{flex:1;font-weight:500}
+  .th-highlight{display:grid;grid-template-columns:auto 72px 1fr auto auto;gap:7px;
+    align-items:center;padding:7px 10px;border-top:1px solid rgba(32,72,110,.45);cursor:pointer}
+  .th-highlight:hover{background:var(--table-2)}
+  .th-highlight time{font-family:var(--mono);color:var(--ink-dim)}
+  .th-highlight button,.th-match-head button{padding:2px 7px}
+  .th-fields{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+  .th-fields label{display:grid;gap:4px;color:var(--ink-dim);font-size:12px}
+  .th-fields label:first-child,.th-fields label:nth-child(2){grid-column:1/-1}
+  .th-fields input{width:100%;font-size:15px;padding:8px}
+  .th-preview{aspect-ratio:16/9;background:#04121F;display:grid;place-items:center;
+    margin:14px 0;border:1px solid var(--line-soft);overflow:hidden;color:var(--ink-dim)}
+  .th-preview video{width:100%;height:100%}
+  .th-warnings{white-space:pre-wrap;color:var(--warn);font-size:12px;line-height:1.6;margin:9px 0}
+  .th-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .th-output{font:11px var(--mono);color:var(--ink-dim);overflow-wrap:anywhere;margin-top:10px}
+  .th-status{white-space:pre-wrap;font:11px var(--mono);line-height:1.55;margin-top:10px}
+
   @media (max-width:960px){
     .shell{grid-template-columns:1fr;grid-template-rows:auto auto auto 1fr;height:auto}
     .rail{border-left:0;border-top:1px solid var(--line-soft)}
     .stage{height:54vh}
+    .th-body{grid-template-columns:1fr;overflow:auto}.th-list,.th-side{overflow:visible}
   }
   @media (max-width:520px){.intro-fields{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){*{transition:none !important}}
@@ -1555,6 +1617,7 @@ HTML = r"""<meta charset="utf-8">
     <button class="btn" id="pick">載入影片</button>
     <button class="btn" id="pickMulti">載入多段影片…</button>
     <button class="btn" id="newMatch">新增比賽</button>
+    <button class="btn hot" id="openTournament">建立賽事精彩集錦…</button>
     <span class="srcname" id="srcname">尚未載入</span>
     <div class="ctl">A<input type="text" id="nameA" value="選手 A"></div>
     <div class="ctl">B<input type="text" id="nameB" value="選手 B"></div>
@@ -1751,6 +1814,45 @@ HTML = r"""<meta charset="utf-8">
   </div>
 </div>
 
+<section class="tournament-panel" id="tournamentPanel" hidden aria-label="賽事精彩集錦">
+  <div class="th-head">
+    <h1>賽事精彩集錦</h1>
+    <button class="btn hot" id="tournamentPick">選擇賽事資料夾…</button>
+    <span class="srcname" id="tournamentRoot">尚未選擇</span>
+    <span style="flex:1"></span>
+    <button class="btn" id="closeTournament">回到比賽剪輯</button>
+  </div>
+  <div class="th-body">
+    <div class="th-list">
+      <div id="tournamentEmpty" class="empty">選擇賽事根目錄後，會遞迴掃描每場比賽的 <b>ttcut-data/*.tags.json</b> 與舊版直接放置的標記檔。</div>
+      <div id="tournamentResults" hidden>
+        <div class="th-summary"><span>掃描 <strong id="thMatches">0</strong> 場比賽</span><span>找到 <strong id="thHighlights">0</strong> 球精彩球</span><span>已選 <strong id="thSelected">0 / 0</strong> 球</span></div>
+        <div id="thWarnings" class="th-warnings"></div>
+        <div id="thMatchList"></div>
+      </div>
+    </div>
+    <aside class="th-side">
+      <div class="th-fields">
+        <label>賽事名稱<input id="thTournament"></label>
+        <label>集錦標題<input id="thTitle" value="精彩好球"></label>
+        <label>主角姓名<input id="thProtagonist"></label>
+        <label>學校<input id="thSchool"></label>
+      </div>
+      <div class="th-preview" id="thPreview"><span>點選精彩球即可預覽</span></div>
+      <div class="line">品質
+        <select id="thQuality"><option value="fast">快</option><option value="high" selected>標準</option><option value="max">極致（CPU）</option></select>
+      </div>
+      <div class="th-actions">
+        <button class="btn" id="thSaveAs" disabled>另存為…</button>
+        <button class="btn" id="thDefaultOut" disabled>使用預設位置</button>
+        <button class="btn hot" id="thRender" disabled>製作賽事精彩集錦</button>
+      </div>
+      <div class="th-output" id="thOutput">—</div>
+      <div class="th-status" id="thStatus"></div>
+    </aside>
+  </div>
+</section>
+
 <script>
 (() => {
   const VERSION = "__VERSION__";
@@ -1790,6 +1892,167 @@ HTML = r"""<meta charset="utf-8">
     s = Math.round(s);
     return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
   };
+
+  /* ───────────────────────── 賽事精彩集錦 Builder（不改一般編輯器資料） */
+  let tournamentScan = null, tournamentVideo = null, tournamentPreview = null;
+  let tournamentCustomOutput = false, tournamentPoll = null;
+  const escHtml = value => String(value == null ? '' : value)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  const thMetadata = () => ({tournament:$('thTournament').value.trim(),
+    title:$('thTitle').value.trim() || '精彩好球',
+    protagonist:$('thProtagonist').value.trim(), school:$('thSchool').value.trim()});
+  function thSelectedCount() {
+    return tournamentScan ? tournamentScan.matches.reduce((sum, match) =>
+      sum + match.highlights.filter(item => item.selected !== false).length, 0) : 0;
+  }
+  function thReview() {
+    const selected = {}, highlight_order = {};
+    for (const match of tournamentScan.matches) {
+      selected[match.id] = Object.fromEntries(match.highlights.map(h => [h.point_id, h.selected !== false]));
+      highlight_order[match.id] = match.highlights.map(h => h.point_id);
+    }
+    return {match_order:tournamentScan.matches.map(match => match.id), selected, highlight_order};
+  }
+  function paintTournament() {
+    if (!tournamentScan) return;
+    $('tournamentEmpty').hidden = true; $('tournamentResults').hidden = false;
+    $('tournamentRoot').textContent = tournamentScan.root;
+    $('thMatches').textContent = tournamentScan.scanned_matches;
+    $('thHighlights').textContent = tournamentScan.total_highlights;
+    $('thSelected').textContent = thSelectedCount() + ' / ' + tournamentScan.total_highlights;
+    $('thWarnings').textContent = (tournamentScan.warnings || []).map(w => '⚠ ' + w.message).join('\n');
+    $('thMatchList').innerHTML = tournamentScan.matches.map((match, mi) => `
+      <section class="th-match" data-match-index="${mi}">
+        <div class="th-match-head"><span>☰</span><b>${escHtml(match.label)}</b>
+          <span>${match.highlights.length} 球</span>
+          <button class="btn" data-match-up="${mi}" ${mi===0?'disabled':''}>↑</button>
+          <button class="btn" data-match-down="${mi}" ${mi===tournamentScan.matches.length-1?'disabled':''}>↓</button>
+        </div>
+        ${match.highlights.map((h, hi) => `<div class="th-highlight" data-preview="${mi}:${hi}">
+          <input type="checkbox" data-select="${mi}:${hi}" ${h.selected!==false?'checked':''} aria-label="選取精彩球">
+          <time>${escHtml(fmt(h.point_time))}</time><span>${escHtml(h.label)}</span>
+          <button class="btn" data-highlight-up="${mi}:${hi}" ${hi===0?'disabled':''}>↑</button>
+          <button class="btn" data-highlight-down="${mi}:${hi}" ${hi===match.highlights.length-1?'disabled':''}>↓</button>
+        </div>`).join('')}
+      </section>`).join('') || '<div class="empty">沒有找到可用的精彩球。</div>';
+    $('thSaveAs').disabled = false; $('thDefaultOut').disabled = false;
+    $('thRender').disabled = thSelectedCount() === 0;
+    if (!tournamentCustomOutput) {
+      const md = thMetadata(), protagonist = md.protagonist ? '_' + md.protagonist : '_';
+      $('thOutput').textContent = `${tournamentScan.root}/${md.tournament || '賽事'}${protagonist}精彩好球/`;
+    }
+  }
+  function loadTournamentSegment(matchIndex, segmentIndex, globalStart, globalEnd, autoplay=true) {
+    const match = tournamentScan.matches[matchIndex], sources = match.preview_sources || [];
+    const source = sources[segmentIndex]; if (!source) return;
+    if (tournamentVideo) { tournamentVideo.pause(); tournamentVideo.remove(); }
+    const holder = $('thPreview'); holder.innerHTML = '';
+    tournamentVideo = document.createElement('video'); tournamentVideo.controls = true;
+    tournamentVideo.playsInline = true; holder.appendChild(tournamentVideo);
+    tournamentPreview = {matchIndex,segmentIndex,globalStart,globalEnd,autoplay};
+    tournamentVideo.src = '/tournament/video?match=' + encodeURIComponent(match.id) +
+      '&segment=' + segmentIndex + '&t=' + Date.now();
+    tournamentVideo.addEventListener('loadedmetadata', () => {
+      tournamentVideo.currentTime = Math.max(0, globalStart - source.offset);
+      if (autoplay) tournamentVideo.play().catch(() => {});
+    });
+    tournamentVideo.addEventListener('timeupdate', () => {
+      const global = source.offset + tournamentVideo.currentTime;
+      if (global >= globalEnd - .02) tournamentVideo.pause();
+    });
+    tournamentVideo.addEventListener('ended', () => {
+      const next = segmentIndex + 1;
+      if (next < sources.length && sources[next].offset < globalEnd - .02)
+        loadTournamentSegment(matchIndex, next, sources[next].offset, globalEnd, true);
+    });
+  }
+  function previewTournamentHighlight(mi, hi) {
+    const match = tournamentScan.matches[mi], item = match.highlights[hi];
+    const sources = match.preview_sources || [];
+    if (!sources.length) { $('thStatus').textContent = `${match.label}：來源影片無法預覽。`; return; }
+    const start = Math.max(0, item.serve_time - .8);
+    const end = Math.min(sources.at(-1).end, item.point_time + 2.0);
+    const segment = sources.findIndex((source,index) => start < source.end || index === sources.length-1);
+    loadTournamentSegment(mi, Math.max(0,segment), start, end, true);
+    $('thStatus').textContent = `${match.label} · ${fmt(start)} → ${fmt(end)}`;
+  }
+  $('openTournament').addEventListener('click', () => $('tournamentPanel').hidden = false);
+  $('closeTournament').addEventListener('click', () => {
+    if (tournamentVideo) tournamentVideo.pause();
+    $('tournamentPanel').hidden = true;
+  });
+  $('tournamentPick').addEventListener('click', async () => {
+    $('thStatus').textContent = '正在掃描賽事資料夾…';
+    try {
+      const response = await fetch('/tournament/pick',{method:'POST'}), data = await response.json();
+      if (!response.ok) throw new Error(data.error || '掃描失敗');
+      if (data.cancelled) { $('thStatus').textContent = ''; return; }
+      tournamentScan = data; tournamentCustomOutput = false;
+      const md = data.metadata || {};
+      $('thTournament').value = md.tournament || ''; $('thTitle').value = md.title || '精彩好球';
+      $('thProtagonist').value = md.protagonist || ''; $('thSchool').value = md.school || '';
+      $('thStatus').textContent = ''; paintTournament();
+    } catch (error) { $('thStatus').textContent = error.message; }
+  });
+  $('thMatchList').addEventListener('change', event => {
+    const control = event.target.closest('[data-select]'); if (!control || !tournamentScan) return;
+    const [mi,hi] = control.dataset.select.split(':').map(Number);
+    tournamentScan.matches[mi].highlights[hi].selected = control.checked; paintTournament();
+  });
+  $('thMatchList').addEventListener('click', event => {
+    if (!tournamentScan) return;
+    const action = selector => event.target.closest(selector);
+    let button = action('[data-match-up]');
+    if (button) { const i=+button.dataset.matchUp; [tournamentScan.matches[i-1],tournamentScan.matches[i]]=[tournamentScan.matches[i],tournamentScan.matches[i-1]]; paintTournament(); return; }
+    button = action('[data-match-down]');
+    if (button) { const i=+button.dataset.matchDown; [tournamentScan.matches[i+1],tournamentScan.matches[i]]=[tournamentScan.matches[i],tournamentScan.matches[i+1]]; paintTournament(); return; }
+    button = action('[data-highlight-up]');
+    if (button) { const [mi,hi]=button.dataset.highlightUp.split(':').map(Number), a=tournamentScan.matches[mi].highlights; [a[hi-1],a[hi]]=[a[hi],a[hi-1]]; paintTournament(); return; }
+    button = action('[data-highlight-down]');
+    if (button) { const [mi,hi]=button.dataset.highlightDown.split(':').map(Number), a=tournamentScan.matches[mi].highlights; [a[hi+1],a[hi]]=[a[hi],a[hi+1]]; paintTournament(); return; }
+    if (action('[data-select]')) return;
+    const row = action('[data-preview]');
+    if (row) { const [mi,hi]=row.dataset.preview.split(':').map(Number); previewTournamentHighlight(mi,hi); }
+  });
+  for (const id of ['thTournament','thTitle','thProtagonist','thSchool'])
+    $(id).addEventListener('input', paintTournament);
+  $('thSaveAs').addEventListener('click', async () => {
+    if (!tournamentScan) return;
+    const response = await fetch('/tournament/save-as',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({metadata:thMetadata()})});
+    const data = await response.json();
+    if (!response.ok) { $('thStatus').textContent = data.error; return; }
+    if (!data.cancelled) { tournamentCustomOutput = true; $('thOutput').textContent = data.layout.out; }
+  });
+  $('thDefaultOut').addEventListener('click', async () => {
+    await fetch('/tournament/default-output',{method:'POST'}); tournamentCustomOutput = false; paintTournament();
+  });
+  function pollTournamentRender() {
+    if (tournamentPoll) clearInterval(tournamentPoll);
+    tournamentPoll = setInterval(async () => {
+      try {
+        const status = await (await fetch('/render/status')).json();
+        $('thStatus').textContent = `${status.message || ''} ${status.pct == null ? '' : status.pct.toFixed(0)+'%'}${status.speed ? ' · '+status.speed : ''}`;
+        if (status.state !== 'running') {
+          clearInterval(tournamentPoll); tournamentPoll = null;
+          $('thRender').disabled = thSelectedCount() === 0;
+          if (status.state === 'done') $('thStatus').textContent = `完成 → ${status.out}\n封面 → ${status.thumbnail}`;
+          else if (status.state === 'error') $('thStatus').textContent = (status.message || '失敗') + '\n' + (status.log || []).join('\n');
+        }
+      } catch (error) { clearInterval(tournamentPoll); tournamentPoll=null; $('thStatus').textContent='失去與本機服務的連線。'; }
+    },500);
+  }
+  $('thRender').addEventListener('click', async () => {
+    if (!tournamentScan || !thSelectedCount()) return;
+    $('thRender').disabled = true; $('thStatus').textContent = '正在驗證來源影片…';
+    try {
+      const response = await fetch('/tournament/render',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({metadata:thMetadata(),review:thReview(),settings:{quality:$('thQuality').value}})});
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || '無法開始渲染');
+      $('thOutput').textContent = data.layout.out; $('thStatus').textContent = (data.notes || []).join('\n');
+      pollTournamentRender();
+    } catch (error) { $('thStatus').textContent=error.message; $('thRender').disabled=thSelectedCount()===0; }
+  });
   const eventPayload = e => ({
     t: +e.t.toFixed(3), frame: frameOf(e.t), type: e.type,
     ...(e.winner === undefined ? {} : {winner: e.winner}),
@@ -2918,6 +3181,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._html()
         if p == "/video":
             return self._video()
+        if p == "/tournament/video":
+            return self._tournament_video()
         if p == "/state":
             with STATE_LOCK:
                 v = STATE["video"]
@@ -2977,6 +3242,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._render()
             if p == "/render/cancel":
                 return self._cancel()
+            if p == "/tournament/pick":
+                return self._tournament_pick()
+            if p == "/tournament/save-as":
+                return self._tournament_save_as()
+            if p == "/tournament/default-output":
+                return self._tournament_default_output()
+            if p == "/tournament/render":
+                return self._tournament_render()
         except Exception as ex:
             return self._json(dict(error=f"{type(ex).__name__}: {ex}"), 500)
         self.send_error(404)
@@ -3052,6 +3325,67 @@ class Handler(BaseHTTPRequestHandler):
             if not is_preview_disconnect(ex):
                 raise
             # seek／跨檔時瀏覽器已改送新的 Range request，舊串流直接結束。
+
+    def _tournament_video(self):
+        query = parse_qs(urlparse(self.path).query)
+        match_id = (query.get("match") or [""])[0]
+        try:
+            segment = int((query.get("segment") or ["0"])[0])
+        except ValueError:
+            return self.send_error(400, "bad segment")
+        with STATE_LOCK:
+            scan = STATE.get("tournament") or {}
+        match = next((item for item in scan.get("matches", [])
+                      if item.get("id") == match_id), None)
+        sources = (match or {}).get("preview_sources") or []
+        if not match or segment < 0 or segment >= len(sources):
+            return self.send_error(404, "no such tournament source")
+        path = sources[segment]["path"]
+        if not os.path.isfile(path):
+            return self.send_error(404, "source missing")
+        return self._send_file_range(path)
+
+    def _send_file_range(self, path):
+        """Range response shared by the isolated tournament preview endpoint."""
+        size, ctype = os.path.getsize(path), guess_type(path)
+        start, end, partial = 0, os.path.getsize(path) - 1, False
+        rng = self.headers.get("Range")
+        if rng:
+            match = re.match(r"bytes=(\d*)-(\d*)", rng.strip())
+            if match:
+                left, right = match.groups()
+                if left:
+                    start, end = int(left), int(right) if right else size - 1
+                elif right:
+                    start = max(0, size - int(right))
+                if start >= size:
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.end_headers()
+                    return
+                end, partial = min(end, size - 1), True
+        length = end - start + 1
+        self.send_response(206 if partial else 200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Content-Length", str(length))
+        if partial:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(start)
+                left = length
+                while left:
+                    chunk = handle.read(min(256 * 1024, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except OSError as ex:
+            if not is_preview_disconnect(ex):
+                raise
 
     # ── 計分（唯一權威）
     def _fold(self):
@@ -3350,6 +3684,108 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         return self._json(dict(ok=True))
+
+    # ── 賽事精彩集錦（與一般編輯器狀態隔離）
+    def _tournament_pick(self):
+        with STATE_LOCK:
+            if STATE["job"] and STATE["job"].state == "running":
+                return self._json(dict(error="請等成片完成再掃描賽事。"), 409)
+        root = native_pick_folder()
+        if not root:
+            return self._json(dict(cancelled=True))
+        scan = scan_tournament(root, fold_full, read_format)
+        for match in scan["matches"]:
+            try:
+                match["preview_sources"] = make_sources(
+                    match["sources"], probe, probe_audio, STATE["ffprobe"])
+            except Exception as ex:
+                match["preview_sources"] = []
+                scan["warnings"].append(dict(
+                    type="source-unreadable", match=match["label"],
+                    message=f"{match['label']}：來源影片無法預覽（{ex}）"))
+        with STATE_LOCK:
+            STATE["tournament"] = scan
+            STATE["tournament_out"] = None
+        return self._json(scan)
+
+    @staticmethod
+    def _tournament_default_base(scan, metadata):
+        stem = tournament_output_stem(metadata, safe_filename_part)
+        base = os.path.join(scan["root"], stem + ".mp4")
+        number = 2
+        while os.path.exists(tournament_output_layout(base)["folder"]):
+            base = os.path.join(scan["root"], f"{stem}_{number}.mp4")
+            number += 1
+        return base
+
+    def _tournament_save_as(self):
+        with STATE_LOCK:
+            scan = STATE.get("tournament")
+        if not scan:
+            return self._json(dict(error="請先選擇賽事資料夾。"), 400)
+        metadata = dict(scan["metadata"], **(self._body().get("metadata") or {}))
+        path = native_save_video(self._tournament_default_base(scan, metadata))
+        if path:
+            with STATE_LOCK:
+                STATE["tournament_out"] = path
+        return self._json(dict(path=path, cancelled=not bool(path),
+                               layout=tournament_output_layout(path) if path else None))
+
+    def _tournament_default_output(self):
+        with STATE_LOCK:
+            STATE["tournament_out"] = None
+        return self._json(dict(ok=True))
+
+    def _tournament_render(self):
+        with STATE_LOCK:
+            scan = STATE.get("tournament")
+            custom = STATE.get("tournament_out")
+            job = STATE.get("job")
+            ffmpeg = STATE.get("ffmpeg")
+        if job and job.state == "running":
+            return self._json(dict(error="已經有一個渲染在進行中。"), 409)
+        if not scan:
+            return self._json(dict(error="請先選擇賽事資料夾。"), 400)
+        if not ffmpeg:
+            return self._json(dict(error="找不到 ffmpeg，無法渲染。"), 400)
+        malformed = [w for w in scan["warnings"] if w.get("type") == "malformed-tags"]
+        if malformed:
+            return self._json(dict(error="標記 JSON 格式錯誤：" + malformed[0]["message"]), 400)
+        request = self._body()
+        metadata = dict(scan["metadata"], **(request.get("metadata") or {}))
+        try:
+            plan_d = apply_highlight_review(scan, request.get("review") or {})
+            plan_d = validate_tournament_plan(plan_d, probe, probe_audio, STATE["ffprobe"])
+            profile = tournament_profile(plan_d)
+            settings = dict(request.get("settings") or {}, size=profile["size"],
+                            fps=profile["fps"], normalized=profile["normalized"])
+            base = custom or self._tournament_default_base(scan, metadata)
+            layout = tournament_output_layout(base)
+            if custom and os.path.exists(layout["folder"]):
+                raise TournamentError("同名集錦資料夾已存在，請在另存為中選新檔名。")
+            os.makedirs(layout["folder"], exist_ok=True)
+            encoder = "libx264" if settings.get("quality") == "max" else HW_ENCODER
+            temp, commands, _ = prepare_tournament_render(
+                plan_d, metadata, settings, layout, ffmpeg, build_ass,
+                FONT_NAME, FONT_NUM, ass_colour(DEFAULT_ACCENT), encoder)
+            manifest = highlight_manifest(plan_d, metadata, settings)
+        except (TournamentError, SourceError, OSError, ValueError) as ex:
+            return self._json(dict(error=str(ex)), 400)
+        new = Job(layout["out"], len(commands))
+        new.thumbnail = layout["thumbnail"]
+        new.log = (["不同來源規格已正規化為 1920×1080 / 30 fps。"]
+                   if profile["normalized"] else
+                   [f"全部片源規格一致，保留 {profile['size'][0]}×{profile['size'][1]} / "
+                    f"{profile['fps']:.2f} fps。"])
+        with STATE_LOCK:
+            STATE["job"] = new
+        threading.Thread(target=run_tournament_commands,
+                         args=(new, commands, temp.name, temp, layout["manifest"], manifest),
+                         daemon=True).start()
+        return self._json(dict(ok=True, layout=layout, out=layout["out"],
+                               thumbnail=layout["thumbnail"],
+                               selected=plan_d["selected_highlights"],
+                               profile=profile, notes=new.log))
 
 
 def safe_filename_part(value):

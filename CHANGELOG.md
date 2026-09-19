@@ -6,6 +6,22 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.3 — Tournament Highlight Builder
+
+- Added an independent tournament mode that recursively discovers modern and
+  legacy tags layouts, safely reports malformed tags, and skips invalid
+  highlighted points that have no preceding serve.
+- Highlight review supports checkboxes, match ordering, highlight ordering, and
+  multi-file global-time preview without modifying source tags.
+- Exports one MP4 with an overall title, per-match separators, and selected
+  rallies rendered from original sources with the Koko scoreboard. Score state
+  comes from the same `fold_full()` timeline as normal match rendering.
+- Common media profiles are retained; mixed resolution/frame-rate/audio sources
+  normalize to 1080p/30 and 48 kHz stereo for reliable concatenation.
+- Added a 1280×720 title-composition thumbnail and a versioned Builder manifest.
+- All ASS, filter, concat, and intermediate clip files use a system temporary
+  directory and are cleaned after success, failure, or cancellation.
+
 ## V2.3 — 2026-09-13
 
 ### Added

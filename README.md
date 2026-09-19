@@ -63,6 +63,10 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 
 With **One folder per match**, output goes to `<root>/<basename>/<basename>.mp4` and `<root>/<basename>/<basename>.thumbnail.jpg`; tags go to `<root>/<basename>/ttcut-data/<basename>.tags.json`. Automatic output uses `_2`, `_3`, and so on when that match folder already exists. **Same folder** keeps the MP4, optional thumbnail, and tags together beside the source or in the Save As destination; automatic output suffixes an existing MP4. The output preview lists all three planned paths. Source recordings stay in their original locations. **New match** clears source segments, markers, score, and custom output path while keeping the organization preference; **Exit ttcut** stops the local server. Ctrl-C remains available.
 
+### Tournament Highlight Builder
+
+Choose **建立賽事精彩集錦…** and select a tournament root. The independent Builder recursively discovers modern `*/ttcut-data/*.tags.json` and legacy match-folder `*.tags.json`, collects `highlight: true` point events, and lets you uncheck, preview, and reorder highlights and matches without changing any source tags. It renders one MP4 from the original source videos: a three-second overall title, a one-second card for each match, then the selected rallies with the Koko scoreboard at the score state for that point. It also writes a 1280×720 thumbnail and a compact `.highlights.json` project manifest. Mixed media is normalized to 1080p/30 with aspect ratio preserved; common source resolution and frame rate are retained when all sources agree.
+
 For multiple files, ttcut shows and saves one continuous clock. Candidate and event times, seeking, and cuts use this global time. Different resolution, frame rate, codec, or audio specs trigger a warning; rendering adjusts segments in one FFmpeg run and leaves no merged source file. If resolution differs, select an ROI for each segment before rally analysis. If the camera framing changes at the same resolution, enable the per-segment ROI option. The tags JSON stores source paths and offsets; reopening reports a missing segment by filename.
 
 ### Video scoreboard style

@@ -104,6 +104,14 @@ python3 rally_detection.py match.MOV --roi 0.20,0.20,0.60,0.78 --start 30 --end 
 
 `--roi` 依序是 `x,y,寬,高`，全部都是相對於整張畫面的 0–1 比例。
 
+### 賽事精彩集錦 Builder
+
+按上方 **建立賽事精彩集錦…**，選擇賽事根目錄。Builder 會遞迴掃描新版 `*/ttcut-data/*.tags.json` 與舊版直接放在比賽資料夾內的 `*.tags.json`，收集 point event 上的 `highlight: true`。沒有 Highlight 的比賽不列入編輯清單，但仍計入掃描場數；無關 JSON 會忽略，損壞的 tags JSON 與找不到 S 的 Highlight 會標出比賽與時間。
+
+每球預設勾選，可取消並用 ↑／↓ 調整球序；比賽也可用 ↑／↓ 調整場次順序。點球列會從最近合法 S 的前 0.8 秒開始預覽，跨來源檔案時自動接到下一段。這些 Review 操作不會修改原本 tags JSON。
+
+輸出是一支 MP4：3 秒賽事片頭、每場 1 秒對戰卡、依畫面順序排列的精彩球；每球從原始來源渲染並使用與一般成片相同的計分推導，Koko 比分板在得分時間更新。共同片源規格一致時保留解析度與 fps；規格混合時統一成 1920×1080、30 fps，保持比例並補邊，不拉伸。另輸出 1280×720 JPG 封面及 `ttcut-data/*.highlights.json` Builder manifest。中間片段、ASS、concat 清單都在系統暫存資料夾，完成或失敗後清除。
+
 ### 快捷鍵
 
 | 按鍵 | 動作 | 按鍵 | 動作 |
