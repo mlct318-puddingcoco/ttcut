@@ -14,7 +14,7 @@ from tournament_highlights import (
     TournamentError, apply_review, choose_profile, cover_frame_selection,
     discover_tag_files, intro_background_selection, manifest_for, output_layout,
     output_stem, pair_highlights, prepare_intro_background, prepare_render,
-    run_commands, scan_tournament, validate_plan,
+    run_commands, scan_tournament, source_paths, validate_plan,
 )
 from ttcut_v2_3 import (DEFAULT_ACCENT, FONT_NAME, FONT_NUM, Job, ass_colour,
                         build_ass, fold_full, probe, probe_audio, read_format,
@@ -46,6 +46,59 @@ def write_doc(path, payload):
 
 
 class TournamentDiscoveryTests(unittest.TestCase):
+    def test_single_source_absolute_and_legacy_basename_resolution(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "盃賽"
+            absolute = root / "camera-a" / "A.MP4"
+            legacy = root / "camera-b" / "DJI_0005_D.MP4"
+            absolute.parent.mkdir(parents=True)
+            legacy.parent.mkdir()
+            absolute.touch(); legacy.touch()
+            tags = root / "outputs" / "單場" / "ttcut-data" / "單場.tags.json"
+            tags.parent.mkdir(parents=True)
+            self.assertEqual(source_paths(doc(str(absolute)), tags, root), [str(absolute)])
+            self.assertEqual(source_paths(doc(legacy.name), tags, root), [str(legacy)])
+            self.assertEqual(source_paths(doc("camera-b/DJI_0005_D.MP4"), tags, root),
+                             [str(legacy)])
+
+    def test_missing_and_ambiguous_legacy_basename_warn_explicitly(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "盃賽"; match = root / "match"
+            write_doc(match / "ttcut-data" / "missing.tags.json", doc("DJI_missing.MP4"))
+            scan = scan_tournament(root, fold_full, read_format)
+            missing = next(w for w in scan["warnings"] if w["type"] == "source-missing")
+            self.assertEqual(missing["source"], "DJI_missing.MP4")
+            self.assertIn("已檢查", missing["message"])
+            self.assertTrue(missing["attempted"])
+
+            for directory in (root / "cards" / "one", root / "cards" / "two"):
+                directory.mkdir(parents=True)
+                (directory / "DJI_duplicate.MP4").touch()
+            write_doc(match / "ttcut-data" / "duplicate.tags.json", doc("DJI_duplicate.MP4"))
+            scan = scan_tournament(root, fold_full, read_format)
+            ambiguous = next(w for w in scan["warnings"] if w["type"] == "source-ambiguous")
+            self.assertEqual(len(ambiguous["matches"]), 2)
+            self.assertIn("無法安全選擇", ambiguous["message"])
+
+    def test_mixed_single_and_multifile_sources_resolve_in_one_scan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "盃賽"
+            single = root / "camera" / "single.MP4"
+            first = root / "camera" / "multi-1.MP4"
+            second = root / "camera" / "multi-2.MP4"
+            single.parent.mkdir(parents=True)
+            for path in (single, first, second): path.touch()
+            write_doc(root / "matches" / "A" / "ttcut-data" / "A.tags.json",
+                      doc(single.name))
+            write_doc(root / "matches" / "B" / "ttcut-data" / "B.tags.json",
+                      doc(first.name, sources=[str(first), str(second)]))
+            scan = scan_tournament(root, fold_full, read_format)
+            by_id = {match["id"]: match for match in scan["matches"]}
+            self.assertEqual(by_id["matches/A/ttcut-data/A.tags.json"]["sources"],
+                             [str(single)])
+            self.assertEqual(by_id["matches/B/ttcut-data/B.tags.json"]["sources"],
+                             [str(first), str(second)])
+
     def test_recursive_modern_legacy_unrelated_zero_and_bad_json(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "北港媽祖盃"

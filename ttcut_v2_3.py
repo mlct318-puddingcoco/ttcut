@@ -2068,9 +2068,9 @@ HTML = r"""<meta charset="utf-8">
     const nm = names(), sg = startGames(), sp = startPoints();
     return {
       version: 2, generator: 'ttcut ' + VERSION, source: srcName, fps: fps(),
-      ...(sources.length > 1 ? {sources: sources.map(s => ({path:s.path,
-        duration:s.duration, offset:s.offset, end:s.end})), sourceRois: rois,
-        separateRois} : {}),
+      ...(sources.length ? {sources: sources.map(s => ({path:s.path,
+        duration:s.duration, offset:s.offset, end:s.end}))} : {}),
+      ...(sources.length > 1 ? {sourceRois: rois, separateRois} : {}),
       outputOrganization: $('organization').value,
       pointsPerGame: target(),
       players: {A: nm[0], B: nm[1]},
@@ -3626,7 +3626,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(dict(error=pl["reason"]), 400)
         if sources and pl["keeps"][-1][1] > sources[-1]["end"] + .05:
             return self._json(dict(error="標記時間超出來源影片總長度。"), 400)
-        if len(sources) > 1:
+        if sources:
             doc = dict(doc, sources=[{k: s[k] for k in ("path", "duration", "offset", "end")}
                                      for s in sources])
         doc["outputOrganization"] = organization

@@ -62,6 +62,47 @@ class VirtualTimelineTests(unittest.TestCase):
         self.assertEqual(original['keeps'], with_source_metadata['keeps'])
         self.assertEqual(original['scoring'], with_source_metadata['scoring'])
 
+    def test_single_file_render_persists_authoritative_source_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = str(Path(tmp) / 'DJI_0005_D.MP4')
+            Path(source).touch()
+            sources = [dict(path=source, offset=0.0, end=3.0,
+                            **fake_info(3), audio=None)]
+            payload = dict(source='DJI_0005_D.MP4', players={'A':'甲','B':'乙'},
+                           firstServer='A', events=[
+                               {'t':.2,'type':'serve'},
+                               {'t':1.0,'type':'point','winner':'A','highlight':True}])
+            handler = Handler.__new__(Handler)
+            seen, launched = [], []
+            handler._json = lambda obj, code=200: seen.append((code, obj))
+            handler._body = lambda: dict(doc=payload, opt={},
+                                         out=str(Path(tmp) / 'match.mp4'),
+                                         customOutput=True, organization='same-folder')
+
+            class DeferredThread:
+                def __init__(self, target=None, args=(), daemon=None):
+                    launched.append((target, args))
+                def start(self):
+                    pass
+
+            with STATE_LOCK:
+                old_state = dict(STATE)
+                STATE.update(video=source, sources=sources, ffmpeg='ffmpeg',
+                             ffprobe='ffprobe', job=None, custom_out=None)
+            try:
+                with patch('ttcut_v2_3.build_render', return_value=(['ffmpeg'], tmp, None)), \
+                     patch('ttcut_v2_3.threading.Thread', DeferredThread):
+                    handler._render()
+                self.assertEqual(seen[-1][0], 200)
+                saved_doc = launched[-1][1][6]
+                self.assertEqual(saved_doc['source'], 'DJI_0005_D.MP4')
+                self.assertEqual(saved_doc['sources'], [{
+                    'path':source, 'duration':3.0, 'offset':0.0, 'end':3.0}])
+                launched[-1][1][4].cleanup()
+            finally:
+                with STATE_LOCK:
+                    STATE.update(old_state)
+
     def test_json_reopen_missing_file_and_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             original = self.sources(tmp, [2, 3])

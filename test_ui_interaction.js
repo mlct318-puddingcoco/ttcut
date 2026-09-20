@@ -64,6 +64,15 @@ vm.runInNewContext(script, context);
 const video = {currentTime: 0, duration: 300, paused: false,
   pause() { this.paused = true; }, remove() { this.removed = true; }};
 context.testUI.setVideo(video);
+context.testUI.setSource('/camera/DJI_0005.MP4', '/output/match.mp4');
+context.testUI.setSources({sources:[{path:'/camera/DJI_0005.MP4',duration:300,
+  offset:0,end:300,w:1920,h:1080,codec:'h264',fps_frac:'30/1',audio:{codec_name:'aac'}}],
+  geometryMismatch:false});
+assert.equal(context.testUI.docPayload().source, 'old.mp4',
+  'legacy single-file source field remains available');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.docPayload().sources)), [{
+  path:'/camera/DJI_0005.MP4',duration:300,offset:0,end:300}],
+  'new single-file documents retain a resolvable absolute source path');
 node('scoreboardStyle').value = 'koko';
 assert.equal(context.testUI.docPayload().scoreboard.style, 'koko');
 node('scoreboardStyle').value = 'ttcut';
