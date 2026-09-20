@@ -6,6 +6,51 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.3.3 — Highlight Timing Fix
+
+- Fixed 59.94 fps Tournament Highlight exports playing every rally after the
+  moving intro in slow motion. The FFV1 background's millisecond time base had
+  produced a non-standard intro frame rate that was unsafe to stream-copy next
+  to exact `60000/1001` rally clips.
+- Every intro and rally segment now uses the same exact rational frame rate,
+  MP4 video track timescale, zero-based timestamps, pixel format, and 48 kHz
+  stereo AAC profile before the existing no-reencode final concatenation.
+
+## Koko v1.3.2 — Natural Highlight Cover
+
+- Tournament compilations now use the first selected rally's moving source
+  footage for the three-second overall intro, starting at the rally clip start
+  and joining source segments when the window crosses a multi-file boundary.
+- The intro and 1280×720 thumbnail use the same natural background sequence and
+  the normal-match aspect-ratio rules. Blur, darkening, desaturation, and the
+  black overlay were removed; short windows freeze the last frame and setup
+  failure safely falls back to the existing dark title card.
+
+## Koko v1.3.1 — Highlight Presentation Polish
+
+- Removed per-match separator cards from tournament compilations while retaining
+  match grouping and all review ordering controls in the Builder.
+- The three-second overall intro and 1280×720 thumbnail now share one frame
+  extracted 1.25 seconds into the first selected rally in final review order.
+  The original competition frame is crop-filled, modestly blurred and darkened;
+  a failed extraction falls back to the existing dark title card.
+
+## Koko v1.3 — Tournament Highlight Builder
+
+- Added an independent tournament mode that recursively discovers modern and
+  legacy tags layouts, safely reports malformed tags, and skips invalid
+  highlighted points that have no preceding serve.
+- Highlight review supports checkboxes, match ordering, highlight ordering, and
+  multi-file global-time preview without modifying source tags.
+- Exports one MP4 with an overall title, per-match separators, and selected
+  rallies rendered from original sources with the Koko scoreboard. Score state
+  comes from the same `fold_full()` timeline as normal match rendering.
+- Common media profiles are retained; mixed resolution/frame-rate/audio sources
+  normalize to 1080p/30 and 48 kHz stereo for reliable concatenation.
+- Added a 1280×720 title-composition thumbnail and a versioned Builder manifest.
+- All ASS, filter, concat, and intermediate clip files use a system temporary
+  directory and are cleaned after success, failure, or cancellation.
+
 ## V2.3 — 2026-09-13
 
 ### Added

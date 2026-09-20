@@ -21,6 +21,11 @@ assert.match(html, /<option value="high" selected>標準<\/option>/);
 assert.match(html, /極致（CPU，非常慢）/);
 for (const id of ['newMatch', 'saveAs', 'introEnabled', 'thumbnail', 'exit'])
   assert.match(html, new RegExp(`id="${id}"`));
+for (const id of ['openTournament', 'tournamentPanel', 'tournamentPick', 'thMatchList',
+  'thTournament', 'thTitle', 'thProtagonist', 'thSchool', 'thSaveAs', 'thRender'])
+  assert.match(html, new RegExp(`id="${id}"`));
+assert.match(html, /建立賽事精彩集錦…/);
+assert.match(html, /掃描 <strong id="thMatches">0<\/strong> 場比賽/);
 for (const [id, label] of Object.entries({introTournament:'賽事名稱', introCategory:'組別',
   introPlayerA:'選手 A', introSchoolA:'學校 A', introPlayerB:'選手 B', introSchoolB:'學校 B'}))
   assert.match(html, new RegExp(`<label class="intro-field[^>]*>${label}<input id="${id}"`));
@@ -32,7 +37,7 @@ assert.match(html, /\.intro-field input:focus[\s\S]*border-color:var\(--ball\)/)
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex()}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex()}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget };\n})();';
 
 const nodes = new Map();
 function node(id) {
@@ -80,6 +85,27 @@ function clickRally(selected) {
   // All candidate targets are inside the outer <details id="rallyBox">.
   rallyClick({target: target({details: outerDetails, ...selected})});
 }
+
+const tournament = {root:'/盃賽',scanned_matches:3,total_highlights:3,warnings:[],matches:[
+  {id:'a',label:'甲 vs 乙',highlights:[
+    {point_id:'1:2.000',point_time:2,label:'甲得分',selected:true},
+    {point_id:'3:4.000',point_time:4,label:'乙得分',selected:true}]},
+  {id:'b',label:'甲 vs 丙',highlights:[
+    {point_id:'1:3.000',point_time:3,label:'甲得分',selected:true}]}
+]};
+context.testUI.setTournament(tournament);
+context.testUI.paintTournament();
+assert.equal(context.testUI.thSelectedCount(),3);
+assert.match(node('thMatchList').innerHTML,/甲 vs 乙/);
+const selectFirst = {dataset:{select:'0:0'},checked:false};
+node('thMatchList').listeners.change({target:target({'[data-select]':selectFirst})});
+assert.equal(context.testUI.thSelectedCount(),2,'builder checkbox updates this review only');
+node('thMatchList').listeners.click({target:target({'[data-match-down]':{dataset:{matchDown:'0'}}})});
+assert.deepEqual(Array.from(context.testUI.thReview().match_order),['b','a'],
+  'match arrows define final render order');
+node('thMatchList').listeners.click({target:target({'[data-highlight-down]':{dataset:{highlightDown:'1:0'}}})});
+assert.deepEqual(Array.from(context.testUI.thReview().highlight_order.a),['3:4.000','1:2.000'],
+  'highlight arrows define within-match render order');
 
 clickRally({'[data-rally]': row});
 assert.equal(video.currentTime, candidate.start);
