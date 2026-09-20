@@ -71,28 +71,101 @@ def _match_folder(tags_path):
     return os.path.dirname(parent) if os.path.basename(parent).casefold() == "ttcut-data" else parent
 
 
-def _resolve_source(path, tags_path, match_folder):
+def _unique_paths(paths):
+    result, seen = [], set()
+    for path in paths:
+        path = os.path.abspath(path)
+        key = os.path.normcase(os.path.realpath(path))
+        if key not in seen:
+            seen.add(key)
+            result.append(path)
+    return result
+
+
+def _local_basename_matches(root, basename):
+    """Find exact-name recovery candidates inside one explicitly selected tree."""
+    if not root or not basename:
+        return []
+    matches = []
+    wanted = basename.casefold()
+    try:
+        for directory, dirs, files in os.walk(root):
+            dirs.sort(key=str.casefold)
+            for name in sorted(files, key=str.casefold):
+                if name.casefold() == wanted:
+                    matches.append(os.path.join(directory, name))
+    except OSError:
+        pass
+    return _unique_paths(matches)
+
+
+def _resolve_source(path, tags_path, match_folder, tournament_root=None):
+    """Resolve a stored source without ever guessing between duplicate names."""
     if not path:
-        return None
-    path = os.path.expanduser(str(path))
-    candidates = ([path] if os.path.isabs(path) else
-                  [os.path.join(match_folder, path),
-                   os.path.join(os.path.dirname(match_folder), path),
-                   os.path.join(os.path.dirname(tags_path), path)])
+        return dict(path=None, stored="", attempted=[], matches=[])
+    stored = os.path.expanduser(str(path))
+    if os.path.isabs(stored):
+        candidates = [stored]
+    else:
+        candidates = [os.path.join(os.path.dirname(tags_path), stored),
+                      os.path.join(match_folder, stored),
+                      os.path.join(os.path.dirname(match_folder), stored)]
+        if tournament_root:
+            candidates.append(os.path.join(tournament_root, stored))
+    candidates = _unique_paths(candidates)
     for candidate in candidates:
         if os.path.isfile(candidate):
-            return os.path.abspath(candidate)
-    return os.path.abspath(candidates[0])
+            return dict(path=candidate, stored=stored, attempted=candidates, matches=[])
+
+    # v1.3 single-file documents stored only a basename.  Also recover an
+    # absolute source that was moved together with the selected tournament.
+    basename = os.path.basename(stored)
+    may_recover = os.path.basename(stored) == stored or os.path.isabs(stored)
+    matches = _local_basename_matches(tournament_root, basename) if may_recover else []
+    if len(matches) == 1:
+        return dict(path=matches[0], stored=stored, attempted=candidates, matches=matches)
+    return dict(path=candidates[0], stored=stored, attempted=candidates, matches=matches)
 
 
-def source_paths(doc, tags_path):
+def _is_within(path, root):
+    try:
+        return (os.path.commonpath((os.path.abspath(path), os.path.abspath(root)))
+                == os.path.abspath(root))
+    except ValueError:
+        return False
+
+
+def source_paths(doc, tags_path, tournament_root=None, resolution_warnings=None):
     folder = _match_folder(tags_path)
     raw = []
     if isinstance(doc.get("sources"), list):
         raw = [item.get("path") for item in doc["sources"] if isinstance(item, dict)]
     if not raw and doc.get("source"):
         raw = [doc.get("source")]
-    resolved = [_resolve_source(path, tags_path, folder) for path in raw if path]
+    resolutions = [_resolve_source(path, tags_path, folder, tournament_root)
+                   for path in raw if path]
+    resolved = [item["path"] for item in resolutions if item["path"]]
+    if resolution_warnings is not None:
+        for item in resolutions:
+            if item["path"] and os.path.isfile(item["path"]):
+                continue
+            basename = os.path.basename(item["stored"])
+            attempted = [os.path.relpath(path, tournament_root)
+                         if tournament_root and _is_within(path, tournament_root) else path
+                         for path in item["attempted"]]
+            if len(item["matches"]) > 1:
+                resolution_warnings.append(dict(
+                    type="source-ambiguous", source=basename,
+                    attempted=item["attempted"], matches=item["matches"],
+                    message=(f"來源影片 {basename} 在賽事資料夾內有多個同名檔案，"
+                             "無法安全選擇（" + ", ".join(
+                                 os.path.relpath(path, tournament_root)
+                                 for path in item["matches"]) + "）")))
+            else:
+                resolution_warnings.append(dict(
+                    type="source-missing", source=basename, attempted=item["attempted"],
+                    message=(f"找不到來源影片 {basename}；已檢查："
+                             f"{', '.join(attempted)}")))
     if resolved:
         return resolved
 
@@ -203,8 +276,12 @@ def scan_tournament(root, fold_full, read_format):
         pairs, invalid = pair_highlights(doc.get("events", []))
         pairs = score_states_for_highlights(doc, pairs, fold_full, read_format)
         md = _metadata(doc)
-        paths = source_paths(doc, tags_path)
+        source_warnings = []
+        paths = source_paths(doc, tags_path, root, source_warnings)
         label = f"{md['playerA'] or 'A'} vs {md['playerB'] or 'B'}"
+        for warning in source_warnings:
+            warnings.append(dict(warning, match=label, tags=tags_path,
+                                 message=f"{label}：{warning['message']}"))
         match_id = os.path.relpath(tags_path, root).replace(os.sep, "/")
         highlights = []
         for item in pairs:
