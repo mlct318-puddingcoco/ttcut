@@ -6,6 +6,23 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.4 — Rally Review Mode
+
+- Added a focused, keyboard-first review panel for chronological detector
+  candidates. Enter confirms one serve and starts playback; A/B score through
+  the existing event path; X skips; `[`/`]` revisit candidates; H retains the
+  latest-completed-rally behavior.
+- Review navigation reuses the virtual multi-file timeline, seeks to a clamped
+  0.8-second pre-roll, and pauses each newly selected candidate.
+- Candidate rows now show current, completed, skipped, unreviewed, and
+  low-confidence states plus live progress counts and the authoritative score.
+- Auto-play after serve and auto-advance after scoring default on and remain set
+  across New Match during the app session.
+- Review-to-event associations use in-memory candidate and event object identity;
+  a selected normal candidate can also adopt an S made at its start. Undo and
+  manual event deletion reconcile state without changing tags JSON;
+  review progress intentionally does not persist across restart or detector rerun.
+
 ## Koko v1.3.2 — Autofill UI Polish
 
 - Safari and Chromium saved-information autofill now preserves the structured

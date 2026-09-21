@@ -69,6 +69,12 @@ Choose **建立賽事精彩集錦…** and select a tournament root. The indepen
 
 For multiple files, ttcut shows and saves one continuous clock. Candidate and event times, seeking, and cuts use this global time. Different resolution, frame rate, codec, or audio specs trigger a warning; rendering adjusts segments in one FFmpeg run and leaves no merged source file. If resolution differs, select an ROI for each segment before rally analysis. If the camera framing changes at the same resolution, enable the per-segment ROI option. The tags JSON stores source paths and offsets; reopening reports a missing segment by filename.
 
+### Rally Review Mode
+
+After rally analysis, **Rally Review Mode** provides a focused keyboard workflow. It opens the first unreviewed candidate at a paused, segment-clamped 0.8-second pre-roll. `Enter` confirms one serve and starts playback by default; `A` or `B` uses the normal point event and advances to the next unreviewed candidate; `X` skips without creating an event; `[` and `]` navigate; `H` keeps its latest-completed-rally meaning. Arrow-key frame/second seeking remains available. A candidate with a confirmed serve cannot be skipped until `Z` removes that serve, and skipped candidates have a **Restore unreviewed** action.
+
+The panel shows candidate number, global time, confidence, authoritative score/game state, and completed/skipped/unreviewed progress. Review state is session-local because detector candidates are not part of tags JSON: rerunning detection, starting a new match, or restarting clears it. The auto-play and auto-advance checkboxes remain set across new matches in the same app session.
+
 ### Video scoreboard style
 
 The **Scoreboard style** selector offers **Koko color table** (the default for new tags) and the original **ttcut** board. It affects only the rendered video. The choice is saved as `scoreboard.style` in the tags JSON; older tags without this field continue to use the original board. Koko uses two fixed rows in the lower left: a wide dark name cell, a blue `#19559B` games cell, and a green `#14703F` points cell. Names shrink within their cell when needed; numeric cells keep their size. The video board has no server marker. For command-line renders, `--scoreboard-style koko|ttcut` overrides the JSON choice.

@@ -24,6 +24,15 @@ for (const id of ['newMatch', 'saveAs', 'introEnabled', 'thumbnail', 'exit'])
 for (const id of ['openTournament', 'tournamentPanel', 'tournamentPick', 'thMatchList',
   'thTournament', 'thTitle', 'thProtagonist', 'thSchool', 'thSaveAs', 'thRender'])
   assert.match(html, new RegExp(`id="${id}"`));
+for (const id of ['reviewStart', 'reviewPanel', 'reviewExit', 'reviewCount', 'reviewTime',
+  'reviewConfidence', 'reviewStatus', 'reviewScore', 'reviewProgress', 'reviewPrev',
+  'reviewNext', 'reviewConfirm', 'reviewSkip', 'reviewRestore', 'reviewPlay',
+  'reviewAutoPlay', 'reviewAutoAdvance'])
+  assert.match(html, new RegExp(`id="${id}"`));
+assert.match(html, /id="reviewAutoPlay" checked/);
+assert.match(html, /id="reviewAutoAdvance" checked/);
+assert.match(html, /<kbd>Enter<\/kbd>確認發球/);
+assert.match(html, /<kbd>\[ \]<\/kbd>候選/);
 assert.match(html, /建立賽事精彩集錦…/);
 assert.match(html, /掃描 <strong id="thMatches">0<\/strong> 場比賽/);
 for (const [id, label] of Object.entries({introTournament:'賽事名稱', introCategory:'組別',
@@ -56,12 +65,13 @@ assert.doesNotMatch(html, /(^|\n)\s*input:-webkit-autofill/,
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex()}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { resetReviewProgress(); rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); reconcileReviewState(); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,pendingPlay,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex(),reviewActive,reviewIndex,reviewStates:rallyCandidates.map((_,i)=>reviewStateAt(i)),reviewProgress:reviewProgress()}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget, enterReviewMode, exitReviewMode, selectReviewCandidate, moveReviewCandidate, reviewConfirmServe, reviewScore, reviewSkip, reviewRestore, reviewStartTime, reconcileReviewState };\n})();';
 
 const nodes = new Map();
 function node(id) {
   if (!nodes.has(id)) nodes.set(id, {
     id, value: id === 'fps' ? '30' : '', innerHTML: '', textContent: '',
+    checked: id === 'reviewAutoPlay' || id === 'reviewAutoAdvance',
     scrollTop: 0, scrollHeight: 900,
     listeners: {}, style: {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
@@ -81,7 +91,8 @@ const context = {document, addEventListener(type, fn) { globalListeners[type] = 
 vm.runInNewContext(script, context);
 
 const video = {currentTime: 0, duration: 300, paused: false,
-  pause() { this.paused = true; }, remove() { this.removed = true; }};
+  pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
+  load() { this.loaded = true; }, remove() { this.removed = true; }};
 context.testUI.setVideo(video);
 context.testUI.setSource('/camera/DJI_0005.MP4', '/output/match.mp4');
 context.testUI.setSources({sources:[{path:'/camera/DJI_0005.MP4',duration:300,
@@ -97,6 +108,8 @@ assert.equal(context.testUI.docPayload().scoreboard.style, 'koko');
 node('scoreboardStyle').value = 'ttcut';
 assert.equal(context.testUI.docPayload().scoreboard.style, 'ttcut');
 node('scoreboardStyle').value = 'koko';
+assert.equal(context.testUI.enterReviewMode(), false, 'empty candidate list refuses Review');
+assert.match(node('note').textContent, /沒有候選/);
 const candidate = {start: 151.8, end: 154, duration: 2.2, confidence: .4,
   confidenceTier: 'low', motionMean: 1, motionPeak: 2, sideBalance: 1,
   strongFrames: 2, supportFrames: 3, audioHits: 0};
@@ -135,6 +148,172 @@ node('thMatchList').listeners.click({target:target({'[data-highlight-down]':{dat
 assert.deepEqual(Array.from(context.testUI.thReview().highlight_order.a),['3:4.000','1:2.000'],
   'highlight arrows define within-match render order');
 
+// Synthetic eight-candidate keyboard-only Rally Review scenario.
+const reviewCandidates = [5,12,25,39,52,68,84,101].map((start, index) => ({
+  start, end:start + 3, duration:3, confidence:index === 7 ? .42 : .91,
+  confidenceTier:index === 7 ? 'low' : 'high', motionMean:1, motionPeak:2,
+  sideBalance:1, strongFrames:8, supportFrames:10, audioHits:2
+}));
+context.testUI.setEvents([]);
+context.testUI.setCandidates(reviewCandidates);
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},snaps:[],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(context.testUI.enterReviewMode(), true);
+assert.equal(context.testUI.state().reviewIndex, 0, 'first unreviewed candidate is selected');
+assert.equal(video.currentTime, 4.2, 'Review entry seeks to 0.8 second pre-roll');
+assert.equal(video.paused, true, 'Review entry pauses');
+assert.equal(node('reviewCount').textContent, '候選 01 / 8');
+assert.match(node('reviewScore').innerHTML, /第 <b>3<\/b> 局/);
+assert.match(node('reviewScore').innerHTML, /局數 <b>1–1<\/b>/);
+
+context.testUI.handleKeydown({key:']',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 1, '] navigates to the next candidate');
+assert.equal(video.currentTime, 11.2);
+const reviewIndexBeforeSeek = context.testUI.state().reviewIndex;
+context.testUI.handleKeydown({key:'ArrowLeft',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, reviewIndexBeforeSeek,
+  'arrow keys keep fine-seek behavior during Review');
+assert.ok(video.currentTime < 11.2 && video.currentTime > 11.1);
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 0, '[ navigates to the previous candidate');
+
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, 1);
+assert.equal(context.testUI.events()[0].type, 'serve');
+assert.equal(context.testUI.events()[0].t, 5);
+assert.equal(video.paused, false, 'auto-play after Enter defaults on');
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, 1, 'Enter cannot double-add S');
+
+video.currentTime = 8;
+context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
+assert.deepEqual(context.testUI.events().map(event => event.type), ['serve','point']);
+assert.equal(context.testUI.events()[1].winner, 'A', 'A uses the normal point event');
+assert.equal(context.testUI.state().reviewStates[0], 'completed');
+assert.equal(context.testUI.state().reviewIndex, 1, 'A auto-advances to next unreviewed');
+assert.equal(video.paused, true, 'auto-advanced candidate is paused');
+context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events()[1].highlight, true,
+  'H after auto-advance marks the just-completed rally');
+
+const eventCountBeforeSkip = context.testUI.events().length;
+context.testUI.handleKeydown({key:'X',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, eventCountBeforeSkip, 'X creates no event');
+assert.equal(context.testUI.state().reviewStates[1], 'skipped');
+assert.equal(context.testUI.state().reviewIndex, 2, 'X auto-advances');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:1,skipped:1,unreviewed:6});
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 1, 'previous revisits skipped candidate');
+assert.equal(context.testUI.events().length, eventCountBeforeSkip, 'revisit does not mutate events');
+assert.equal(context.testUI.reviewRestore(), true, 'skipped candidate can be restored');
+assert.equal(context.testUI.state().reviewStates[1], 'unreviewed');
+assert.equal(context.testUI.reviewSkip(), true);
+assert.equal(context.testUI.state().reviewIndex, 2);
+
+context.testUI.reviewConfirmServe();
+const confirmedCount = context.testUI.events().length;
+assert.equal(context.testUI.reviewSkip(), false, 'confirmed S blocks unsafe X');
+assert.equal(context.testUI.events().length, confirmedCount);
+assert.equal(context.testUI.state().reviewStates[2], 'confirmed');
+context.testUI.undo();
+assert.equal(context.testUI.state().reviewStates[2], 'unreviewed',
+  'undoing confirmed S returns candidate to reviewable');
+node('reviewAutoAdvance').checked = false;
+node('reviewAutoPlay').checked = false;
+context.testUI.reviewConfirmServe();
+assert.equal(video.paused, true, 'auto-play preference can be disabled');
+node('reviewAutoPlay').checked = true;
+video.currentTime = 28;
+context.testUI.reviewScore('B');
+assert.equal(context.testUI.state().reviewIndex, 2, 'auto-advance preference can be disabled');
+assert.equal(context.testUI.state().reviewStates[2], 'completed');
+context.testUI.undo();
+assert.equal(context.testUI.state().reviewStates[2], 'confirmed',
+  'undoing the associated point removes the false completed state');
+context.testUI.undo();
+assert.equal(context.testUI.state().reviewStates[2], 'unreviewed');
+context.testUI.reviewConfirmServe();
+video.currentTime = 28;
+context.testUI.reviewScore('B');
+node('reviewAutoAdvance').checked = true;
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, 4, 'completed revisit does not duplicate events');
+context.testUI.selectReviewCandidate(2, false);
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:'3'}}})});
+assert.equal(context.testUI.state().reviewStates[2], 'confirmed',
+  'manual point deletion reconciles completed to confirmed');
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:'2'}}})});
+assert.equal(context.testUI.state().reviewStates[2], 'unreviewed',
+  'manual serve deletion returns the candidate to reviewable');
+
+context.testUI.selectReviewCandidate(7);
+assert.match(node('reviewConfidence').textContent, /⚠ 低信心候選/);
+for (const editable of [{tagName:'INPUT'}, {tagName:'TEXTAREA'}, {tagName:'SELECT'},
+  {tagName:'DIV',isContentEditable:true}]) {
+  const before = context.testUI.events().length, index = context.testUI.state().reviewIndex;
+  context.testUI.handleKeydown({key:'Enter',target:editable,preventDefault(){throw new Error('must not prevent');}});
+  context.testUI.handleKeydown({key:'X',target:editable,preventDefault(){throw new Error('must not prevent');}});
+  assert.equal(context.testUI.events().length, before);
+  assert.equal(context.testUI.state().reviewIndex, index);
+}
+context.testUI.exitReviewMode();
+
+// End-to-end synthetic workload: five regular rallies, two false positives,
+// and one low-confidence real rally, completed without mouse interaction.
+context.testUI.setEvents([]);
+context.testUI.setCandidates(reviewCandidates);
+context.testUI.enterReviewMode();
+const syntheticWinners = new Map([[0,'A'],[2,'B'],[3,'A'],[5,'B'],[6,'A'],[7,'A']]);
+for (let index = 0; index < reviewCandidates.length; index++) {
+  assert.equal(context.testUI.state().reviewIndex, index);
+  if (!syntheticWinners.has(index)) {
+    context.testUI.handleKeydown({key:'X',target:{tagName:'DIV'},preventDefault(){}});
+    continue;
+  }
+  context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+  video.currentTime = reviewCandidates[index].end;
+  context.testUI.handleKeydown({key:syntheticWinners.get(index),target:{tagName:'DIV'},preventDefault(){}});
+}
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:6,skipped:2,unreviewed:0});
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event => ({
+  t:event.t,type:event.type,...(event.winner ? {winner:event.winner} : {})
+})))), reviewCandidates.flatMap((candidate,index) => syntheticWinners.has(index) ? [
+  {t:candidate.start,type:'serve'},
+  {t:candidate.end,type:'point',winner:syntheticWinners.get(index)}
+] : []), 'Review creates the same explicit S/point events as the normal workflow');
+assert.equal(context.testUI.state().reviewStates[7], 'completed',
+  'low confidence remains reviewable and can be completed');
+context.testUI.exitReviewMode();
+
+// Pre-roll uses the existing virtual timeline and clamps at a source boundary.
+context.testUI.setSources({sources:[
+  {path:'/camera/a.mp4',duration:10,offset:0,end:10},
+  {path:'/camera/b.mp4',duration:10,offset:10,end:20}
+],geometryMismatch:false});
+context.testUI.setVideo(video);
+context.testUI.setCandidates([
+  {...reviewCandidates[0],start:9.7,end:9.9},
+  {...reviewCandidates[1],start:10.3,end:13.3}
+]);
+context.testUI.enterReviewMode();
+context.testUI.moveReviewCandidate(1);
+assert.equal(context.testUI.state().activeSegment, 1);
+assert.equal(context.testUI.state().pendingSeek, 0,
+  'cross-file Review pre-roll clamps to the second segment boundary');
+assert.equal(context.testUI.state().pendingPlay, false);
+context.testUI.exitReviewMode();
+
+// Restore the original single-source fixture for normal-editor regression checks.
+context.testUI.setSources({sources:[{path:'/camera/DJI_0005.MP4',duration:300,
+  offset:0,end:300,w:1920,h:1080,codec:'h264',fps_frac:'30/1',audio:{codec_name:'aac'}}],
+  geometryMismatch:false});
+context.testUI.setVideo(video);
+video.currentTime = 0; video.paused = false;
+context.testUI.setEvents([]);
+context.testUI.setCandidates([candidate]);
+
 clickRally({'[data-rally]': row});
 assert.equal(video.currentTime, candidate.start);
 assert.equal(node('tc').textContent, '02:31.80');
@@ -170,6 +349,25 @@ clickRally({'[data-rally]': row, '[data-rally-serve]': {dataset: {rallyServe: '0
 assert.equal(context.testUI.events().length, 1, 'explicit confirmation adds S');
 assert.equal(context.testUI.events()[0].type, 'serve');
 assert.equal(video.currentTime, 0, 'confirmation does not seek');
+video.currentTime = 154;
+context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.enterReviewMode(), true);
+assert.equal(context.testUI.state().reviewStates[0], 'completed',
+  'normal candidate confirm plus normal A reconciles as completed in Review');
+const normalCompletedEvents = context.testUI.events().length;
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, normalCompletedEvents,
+  'Review cannot duplicate an already completed normal-workflow candidate');
+context.testUI.exitReviewMode();
+context.testUI.setEvents([]);
+clickRally({'[data-rally]': row});
+context.testUI.handleKeydown({key:'S',target:{tagName:'DIV'},preventDefault(){}});
+video.currentTime = 154;
+context.testUI.handleKeydown({key:'B',target:{tagName:'DIV'},preventDefault(){}});
+context.testUI.enterReviewMode();
+assert.equal(context.testUI.state().reviewStates[0], 'completed',
+  'selected normal preview S/B events reconcile to the candidate');
+context.testUI.exitReviewMode();
 
 context.testUI.setEvents([{t: 88.25, type: 'serve'}]);
 node('stream').listeners.click({target: target({'.ev': {dataset: {i: '0'}}})});
@@ -393,6 +591,11 @@ context.testUI.clearMatch();
 assert.equal(context.testUI.events().length, 0, 'new match clears highlights with events');
 assert.equal(context.testUI.events().some(e => e.highlight), false);
 assert.equal(context.testUI.state().selectedPointIndex, -1, 'new match clears UI selection');
+assert.equal(context.testUI.state().reviewActive, false, 'new match exits Review Mode');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:0,skipped:0,unreviewed:0}, 'new match clears Review progress');
+assert.equal(node('reviewAutoPlay').checked, true, 'Review preferences survive new match');
+assert.equal(node('reviewAutoAdvance').checked, true);
 
 node('quality').value = 'max';
 node('scoreboardStyle').value = 'koko';
