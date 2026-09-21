@@ -1562,6 +1562,22 @@ HTML = r"""<meta charset="utf-8">
   .intro-field input::placeholder,.intro-legacy input::placeholder,#introFont::placeholder{color:#A9BCD0;opacity:1}
   .intro-field input:focus,.intro-legacy input:focus,#introFont:focus{
     border-color:var(--ball);outline:2px solid var(--ball);outline-offset:1px}
+  .intro-field input:-webkit-autofill:not(:disabled):not([readonly]),
+  .intro-field input:-webkit-autofill:hover:not(:disabled):not([readonly]),
+  .intro-field input:-webkit-autofill:active:not(:disabled):not([readonly]),
+  .intro-legacy input:-webkit-autofill:not(:disabled):not([readonly]),
+  .intro-legacy input:-webkit-autofill:hover:not(:disabled):not([readonly]),
+  .intro-legacy input:-webkit-autofill:active:not(:disabled):not([readonly]),
+  #introFont:-webkit-autofill:not(:disabled):not([readonly]),
+  #introFont:-webkit-autofill:hover:not(:disabled):not([readonly]),
+  #introFont:-webkit-autofill:active:not(:disabled):not([readonly]){
+    background:#071C32;-webkit-text-fill-color:#F7FAFD;caret-color:#F7FAFD;
+    -webkit-box-shadow:0 0 0 1000px #071C32 inset;box-shadow:0 0 0 1000px #071C32 inset;
+    border-color:#6085A6}
+  .intro-field input:-webkit-autofill:focus:not(:disabled):not([readonly]),
+  .intro-legacy input:-webkit-autofill:focus:not(:disabled):not([readonly]),
+  #introFont:-webkit-autofill:focus:not(:disabled):not([readonly]){
+    border-color:var(--ball);outline:2px solid var(--ball);outline-offset:1px}
   .intro-legacy{display:grid;gap:7px;margin-top:10px}
   .intro-legacy[hidden],.intro-fields[hidden],#introAutofill[hidden]{display:none}
   .intro-legacy p{margin:0;color:var(--ink-dim);font-size:12px;line-height:1.45}

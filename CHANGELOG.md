@@ -6,6 +6,11 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.3.2 — Autofill UI Polish
+
+- Safari and Chromium saved-information autofill now preserves the structured
+  intro fields' dark theme, readable text, and orange focus treatment.
+
 ## Koko v1.3.3 — Highlight Timing Fix
 
 - Fixed 59.94 fps Tournament Highlight exports playing every rally after the
