@@ -29,10 +29,29 @@ assert.match(html, /掃描 <strong id="thMatches">0<\/strong> 場比賽/);
 for (const [id, label] of Object.entries({introTournament:'賽事名稱', introCategory:'組別',
   introPlayerA:'選手 A', introSchoolA:'學校 A', introPlayerB:'選手 B', introSchoolB:'學校 B'}))
   assert.match(html, new RegExp(`<label class="intro-field[^>]*>${label}<input id="${id}"`));
-assert.match(html, /\.intro-field input,[\s\S]*background:#071C32/);
-assert.match(html, /color:#F7FAFD/);
+const normalIntroRules = html.match(
+  /\.intro-field input,\.intro-legacy input,#introFont\{([\s\S]*?)\}/);
+assert.ok(normalIntroRules, 'normal intro input styling remains present');
+assert.match(normalIntroRules[1], /background:#071C32/);
+assert.match(normalIntroRules[1], /border:1px solid #6085A6/);
+assert.match(normalIntroRules[1], /color:#F7FAFD/);
 assert.match(html, /::placeholder\{color:#A9BCD0/);
 assert.match(html, /\.intro-field input:focus[\s\S]*border-color:var\(--ball\)/);
+assert.match(html, /input:disabled\{opacity:\.35\}/,
+  'existing disabled input treatment remains unchanged');
+const autofillRules = html.match(
+  /\.intro-field input:-webkit-autofill:not\(:disabled\):not\(\[readonly\]\),[\s\S]*?#introFont:-webkit-autofill:active:not\(:disabled\):not\(\[readonly\]\)\{([\s\S]*?)\}/);
+assert.ok(autofillRules, 'intro autofill styling is scoped and leaves disabled/readonly fields alone');
+assert.match(autofillRules[1], /background:#071C32/);
+assert.match(autofillRules[1], /-webkit-text-fill-color:#F7FAFD/);
+assert.match(autofillRules[1], /caret-color:#F7FAFD/);
+assert.match(autofillRules[1], /-webkit-box-shadow:0 0 0 1000px #071C32 inset/);
+assert.match(autofillRules[1], /border-color:#6085A6/);
+assert.match(html,
+  /\.intro-field input:-webkit-autofill:focus:not\(:disabled\):not\(\[readonly\]\),[\s\S]*?#introFont:-webkit-autofill:focus:not\(:disabled\):not\(\[readonly\]\)\{[\s\S]*?border-color:var\(--ball\)/,
+  'autofilled intro fields retain the orange focus treatment');
+assert.doesNotMatch(html, /(^|\n)\s*input:-webkit-autofill/,
+  'autofill fix must not apply globally to every input');
 
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
