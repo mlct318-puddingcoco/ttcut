@@ -1451,6 +1451,10 @@ HTML = r"""<meta charset="utf-8">
     text-transform:uppercase;color:var(--ink-dim)}
   .streammeta{display:flex;gap:10px;align-items:center}
   .streammeta .highlights{color:var(--warn)}
+  .event-panel{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;background:var(--panel)}
+  .event-latest{padding:3px 7px;font-size:10.5px;letter-spacing:0;text-transform:none;
+    border-color:var(--ball);color:var(--ball)}
+  .event-latest[hidden]{display:none}
   .stream{height:clamp(260px,36vh,330px);flex:0 0 clamp(260px,36vh,330px);
     overflow-y:auto;min-height:260px}
   .ev{display:grid;grid-template-columns:60px 1fr auto auto 25px 18px;gap:7px;align-items:center;
@@ -1538,6 +1542,46 @@ HTML = r"""<meta charset="utf-8">
   .review-legend{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px;color:var(--ink-dim);font-size:10.5px}
   .review-legend span{border:1px solid var(--line-soft);padding:2px 5px;border-radius:3px}
   .review-legend kbd{font-family:var(--mono);color:var(--ink);margin-right:3px}
+
+  .review-hud{display:none}
+  .review-workspace{
+    grid-template-columns:minmax(520px,1fr) clamp(300px,25vw,356px);
+    grid-template-rows:auto minmax(300px,1fr) clamp(260px,31vh,330px);
+    grid-template-areas:"hud hud" "stage review" "events review";
+    height:100vh;overflow:hidden}
+  .review-workspace>header,.review-workspace>.setbar{display:none}
+  .review-workspace>.review-hud{
+    grid-area:hud;display:flex;align-items:center;gap:clamp(12px,2vw,30px);
+    position:sticky;top:0;z-index:8;min-width:0;padding:10px 16px;
+    border-bottom:1px solid var(--line);background:linear-gradient(90deg,#071c32,var(--panel));
+    box-shadow:0 4px 18px rgba(0,0,0,.22)}
+  .review-hud .hud-label{font:700 11px var(--body);letter-spacing:.11em;
+    text-transform:uppercase;color:var(--ball);white-space:nowrap}
+  .review-hud .hud-game,.review-hud .hud-games,.review-hud .hud-candidate{
+    color:var(--ink-dim);white-space:nowrap}
+  .review-hud .hud-score{display:flex;align-items:baseline;justify-content:center;
+    gap:9px;min-width:0;flex:1;font-variant-numeric:tabular-nums}
+  .review-hud .hud-name{max-width:22ch;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;color:var(--ink-dim)}
+  .review-hud .hud-point{font:700 clamp(28px,3.1vw,44px)/.85 var(--disp);color:var(--ink)}
+  .review-hud .hud-colon{font:24px var(--disp);color:var(--ball)}
+  .review-workspace>.stage{grid-area:stage;padding:12px 14px 9px;gap:8px}
+  .review-workspace>.stage .screen{min-height:220px}
+  .review-workspace>.stage .legend,.review-workspace>.stage>.sources{display:none}
+  .review-workspace .roilayer{display:none !important}
+  .review-workspace>.rail{display:contents}
+  .review-workspace>.rail>.board,.review-workspace>.rail>.rallybox,
+  .review-workspace>.rail>.cutout,.review-workspace>.rail>.statbox,
+  .review-workspace>.rail>.render{display:none}
+  .review-workspace>.rail>.review-panel{
+    grid-area:review;display:block;min-height:0;overflow-y:auto;padding:14px;
+    border:0;border-left:1px solid var(--line-soft);background:var(--panel)}
+  .review-workspace>.rail>.review-panel[hidden]{display:none}
+  .review-workspace>.rail>.event-panel{
+    grid-area:events;display:flex;flex-direction:column;min-height:0;margin:0 14px 12px;
+    overflow:hidden;border:1px solid var(--line-soft);border-radius:4px;background:var(--panel)}
+  .review-workspace .event-panel .stream{height:auto;min-height:0;flex:1 1 auto}
+  .review-workspace .review-score{display:none}
 
   .cutout{border-top:1px solid var(--line-soft);padding:11px 14px;font-size:12px;
     color:var(--ink-dim);display:flex;flex-direction:column;gap:5px}
@@ -1650,13 +1694,20 @@ HTML = r"""<meta charset="utf-8">
     .shell{grid-template-columns:1fr;grid-template-rows:auto auto auto 1fr;height:auto}
     .rail{border-left:0;border-top:1px solid var(--line-soft)}
     .stage{height:54vh}
+    .review-workspace{display:grid;grid-template-columns:1fr;
+      grid-template-rows:auto minmax(360px,58vh) minmax(260px,330px) auto;
+      grid-template-areas:"hud" "stage" "events" "review";height:auto;min-height:100vh;overflow:visible}
+    .review-workspace>.review-hud{flex-wrap:wrap;gap:7px 14px}
+    .review-hud .hud-score{order:3;flex-basis:100%;justify-content:flex-start}
+    .review-workspace>.stage{height:auto}
+    .review-workspace>.rail>.review-panel{border-left:0;border-top:1px solid var(--line-soft)}
     .th-body{grid-template-columns:1fr;overflow:auto}.th-list,.th-side{overflow:visible}
   }
   @media (max-width:520px){.intro-fields{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){*{transition:none !important}}
 </style>
 
-<div class="shell">
+<div class="shell" id="appShell">
   <header>
     <div class="brand"><i></i>ttcut<small>__VERSION__</small></div>
     <button class="btn" id="pick">載入影片</button>
@@ -1706,6 +1757,20 @@ HTML = r"""<meta charset="utf-8">
              title="得分數字與名字左側裝飾條共用這個顏色">
       <button class="btn" id="accentReset" title="回到預設橘色">重設</button></div>
   </div>
+
+  <section class="review-hud" id="reviewHud" aria-label="Review 目前比分" aria-live="polite">
+    <strong class="hud-label">Rally Review</strong>
+    <span class="hud-game" id="reviewHudGame">第 — 局</span>
+    <span class="hud-games" id="reviewHudGames">局數 —</span>
+    <div class="hud-score" aria-label="目前記錄比分">
+      <span class="hud-name" id="reviewHudNameA">選手 A</span>
+      <strong class="hud-point" id="reviewHudPointA">0</strong>
+      <span class="hud-colon">:</span>
+      <strong class="hud-point" id="reviewHudPointB">0</strong>
+      <span class="hud-name" id="reviewHudNameB">選手 B</span>
+    </div>
+    <span class="hud-candidate" id="reviewHudCandidate">候選 — / —</span>
+  </section>
 
   <div class="stage">
     <div class="sources" id="sourceList" hidden></div>
@@ -1788,6 +1853,7 @@ HTML = r"""<meta charset="utf-8">
       <div class="review-score" id="reviewScore">比分資料準備中…</div>
       <div class="review-progress" id="reviewProgress">已完成 0 | 跳過 0 | 未審 0</div>
       <div class="review-status" id="reviewManualStatus" hidden></div>
+      <div class="review-status" id="reviewNotice" hidden role="status"></div>
       <div class="review-actions">
         <button class="btn" id="reviewPrev">上一個 [</button>
         <button class="btn" id="reviewNext">下一個 ]</button>
@@ -1810,8 +1876,13 @@ HTML = r"""<meta charset="utf-8">
       </div>
     </section>
 
-    <div class="streamhead"><span>事件</span><span class="streammeta"><span class="highlights">精彩球 <b id="highlightCount">0</b></span><span id="evcount">0</span></span></div>
-    <div class="stream" id="stream"></div>
+    <section class="event-panel" id="eventPanel" aria-label="事件紀錄">
+      <div class="streamhead"><span>事件紀錄</span><span class="streammeta">
+        <button class="btn event-latest" id="eventLatest" type="button" hidden>↓ 回到最新事件</button>
+        <span class="highlights">精彩球 <b id="highlightCount">0</b></span><span id="evcount">0</span>
+      </span></div>
+      <div class="stream" id="stream" tabindex="0" aria-label="事件紀錄，可獨立捲動"></div>
+    </section>
 
     <div class="cutout">
       <div class="row"><span>可剪去區間</span><b id="cutN">0</b></div>
@@ -1953,6 +2024,8 @@ HTML = r"""<meta charset="utf-8">
   let matchSerial = 0;
   let selectedPointEvent = null;
   let pendingEventScroll = {mode:'latest'};
+  const EVENT_BOTTOM_THRESHOLD = 48;
+  let eventAutoFollow = true;
 
   const num = (id, d) => { const v = +$(id).value; return isFinite(v) ? v : d; };
   const fps    = () => Math.max(1, num('fps', 30));
@@ -2707,11 +2780,46 @@ HTML = r"""<meta charset="utf-8">
      object references make undo/deletion reconciliation exact without changing
      the persisted match-event schema; a selected normal preview can associate a
      manual S only while its playhead is still at that candidate start. */
+  function eventNearBottom() {
+    const stream = $('stream');
+    return stream.scrollHeight - stream.clientHeight - stream.scrollTop <= EVENT_BOTTOM_THRESHOLD;
+  }
+  function updateEventFollowButton() {
+    $('eventLatest').hidden = !reviewActive || eventAutoFollow;
+  }
+  function returnToLatestEvent() {
+    const stream = $('stream');
+    stream.scrollTop = stream.scrollHeight;
+    eventAutoFollow = true;
+    updateEventFollowButton();
+  }
+  function syncReviewWorkspace() {
+    $('appShell').classList.toggle('review-workspace', reviewActive);
+    if (!reviewActive) $('reviewNotice').hidden = true;
+    updateEventFollowButton();
+  }
+  function paintReviewHud(cur, nm, progress) {
+    if (!cur) {
+      $('reviewHudGame').textContent = '第 — 局';
+      $('reviewHudGames').textContent = '局數 —';
+      $('reviewHudPointA').textContent = '—'; $('reviewHudPointB').textContent = '—';
+    } else {
+      $('reviewHudGame').textContent = `第 ${cur.gameNo} 局`;
+      $('reviewHudGames').textContent = `局數 ${cur.gA}–${cur.gB}`;
+      $('reviewHudPointA').textContent = cur.a; $('reviewHudPointB').textContent = cur.b;
+    }
+    $('reviewHudNameA').textContent = nm[0]; $('reviewHudNameB').textContent = nm[1];
+    $('reviewHudCandidate').textContent = reviewIndex >= 0
+      ? `候選 ${reviewIndex + 1} / ${rallyCandidates.length} · 完成 ${progress.completed} · 跳過 ${progress.skipped} · 未審 ${progress.unreviewed}`
+      : `候選 — / ${rallyCandidates.length}`;
+  }
   function resetReviewProgress() {
     rallyReview = new Map(); reviewActive = false; reviewIndex = -1;
     manualReview = {serveEvents:[], pointEvent:null, notice:''};
     rallySelectedIndex = -1;
     $('reviewPanel').hidden = true;
+    eventAutoFollow = true;
+    syncReviewWorkspace();
   }
   function manualReviewInProgress() {
     return manualReview.serveEvents.some(event => events.includes(event)) &&
@@ -2823,6 +2931,7 @@ HTML = r"""<meta charset="utf-8">
   }
   function paintReview() {
     $('reviewPanel').hidden = !reviewActive;
+    syncReviewWorkspace();
     if (!reviewActive) return;
     reconcileReviewState();
     const candidate = rallyCandidates[reviewIndex];
@@ -2839,6 +2948,7 @@ HTML = r"""<meta charset="utf-8">
     $('reviewScore').innerHTML = cur
       ? `第 <b>${cur.gameNo}</b> 局 · <b>${escHtml(nm[0])} ${cur.a}</b>　<b>${escHtml(nm[1])} ${cur.b}</b><br>局數 <b>${cur.gA}–${cur.gB}</b>`
       : '比分資料準備中…';
+    paintReviewHud(cur, nm, progress);
     $('reviewProgress').textContent = `已完成 ${progress.completed} | 跳過 ${progress.skipped} | 未審 ${progress.unreviewed}`;
     const manualStatus = manualOpen ? '手動補標中：等待 A/B 得分' : manualReview.notice;
     $('reviewManualStatus').hidden = !manualStatus;
@@ -2867,6 +2977,8 @@ HTML = r"""<meta charset="utf-8">
       return false;
     }
     reviewActive = true;
+    eventAutoFollow = true;
+    returnToLatestEvent();
     let index = rallySelectedIndex >= 0 && rallySelectedIndex < rallyCandidates.length
       ? rallySelectedIndex : firstUnreviewedIndex(-1);
     if (index < 0) index = 0;
@@ -2874,7 +2986,8 @@ HTML = r"""<meta charset="utf-8">
     return selectReviewCandidate(index, true);
   }
   function exitReviewMode() {
-    reviewActive = false; reviewIndex = -1; $('reviewPanel').hidden = true; paintRallies();
+    reviewActive = false; reviewIndex = -1; $('reviewPanel').hidden = true;
+    eventAutoFollow = true; syncReviewWorkspace(); paintRallies();
   }
   function moveReviewCandidate(delta) {
     if (!reviewActive) return false;
@@ -2979,6 +3092,12 @@ HTML = r"""<meta charset="utf-8">
   $('reviewRestore').addEventListener('click', reviewRestore);
   $('reviewPlay').addEventListener('click', () => {
     if (video) video.paused ? video.play().catch(() => {}) : video.pause();
+  });
+  $('eventLatest').addEventListener('click', returnToLatestEvent);
+  $('stream').addEventListener('scroll', () => {
+    if (!reviewActive) return;
+    eventAutoFollow = eventNearBottom();
+    updateEventFollowButton();
   });
 
   /* ───────────────────────── Rally Detection v0.2.3
@@ -3121,9 +3240,11 @@ HTML = r"""<meta charset="utf-8">
     paintReview();
     // Live event creation follows the newest row; historical Highlight edits
     // opt into preserve so the shared rerender cannot move a reviewer's place.
-    pendingEventScroll = eventScroll === 'preserve'
+    // A reviewer who has scrolled away from the bottom also keeps that position
+    // until returning to the live edge explicitly or by scrolling near it.
+    pendingEventScroll = eventScroll === 'preserve' || !eventAutoFollow
       ? {mode:'preserve', top:$('stream').scrollTop}
-      : {mode:'latest'};
+      : {mode:'latest', top:$('stream').scrollTop};
     clearTimeout(timer);
     timer = setTimeout(doRefresh, 50);
   }
@@ -3158,7 +3279,7 @@ HTML = r"""<meta charset="utf-8">
     $('cardA').classList.toggle('serving', cur.server === 0);
     $('cardB').classList.toggle('serving', cur.server === 1);
 
-    const stream = $('stream');
+    const stream = $('stream'), liveScrollTop = stream.scrollTop;
     $('evcount').textContent = events.length;
     $('highlightCount').textContent = events.filter(e =>
       e.type === 'point' && e.highlight === true).length;
@@ -3193,8 +3314,10 @@ HTML = r"""<meta charset="utf-8">
       });
       stream.innerHTML = html;
       if (eventScroll.mode === 'preserve') stream.scrollTop = eventScroll.top;
-      else stream.scrollTop = stream.scrollHeight;
+      else if (eventAutoFollow) stream.scrollTop = stream.scrollHeight;
+      else stream.scrollTop = liveScrollTop;
     }
+    updateEventFollowButton();
 
     const c = st.cuts || {};
     $('cutN').textContent = c.n || 0;
@@ -3266,8 +3389,10 @@ HTML = r"""<meta charset="utf-8">
 
   function banner(msg) {
     const n = $('note');
-    if (!msg) { n.hidden = true; return; }
-    n.hidden = false; n.textContent = msg;
+    const reviewNotice = $('reviewNotice');
+    n.hidden = !msg; reviewNotice.hidden = !msg || !reviewActive;
+    if (!msg) return;
+    n.textContent = msg; reviewNotice.textContent = msg;
   }
 
   $('stream').addEventListener('click', e => {

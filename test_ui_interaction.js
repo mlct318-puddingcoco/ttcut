@@ -14,6 +14,19 @@ assert.match(html, /\.stream\{height:clamp\(260px,36vh,330px\);flex:0 0 clamp\(2
   'event viewport is independently scrollable and tall enough for review');
 assert.match(html, /\.rail\{[\s\S]*overflow-y:auto/,
   'narrow-height layouts can scroll to the sections below the event viewport');
+assert.match(html, /id="appShell"/);
+assert.match(html, /id="reviewHud"[\s\S]*id="reviewHudGame"[\s\S]*id="reviewHudGames"[\s\S]*id="reviewHudPointA"[\s\S]*id="reviewHudPointB"[\s\S]*id="reviewHudCandidate"/,
+  'Review HUD exposes game, games, points, and candidate progress');
+assert.match(html, /id="eventPanel"[\s\S]*id="eventLatest"[\s\S]*id="stream"[^>]*tabindex="0"/,
+  'the shared event list is an independently focusable Review panel');
+assert.match(html, /\.review-workspace\{[\s\S]*grid-template-areas:"hud hud" "stage review" "events review"/,
+  'Review uses a dedicated HUD/video+events/review-controls grid');
+assert.match(html, /\.review-workspace>\.rail>\.board,[\s\S]*\.review-workspace>\.rail>\.render\{display:none\}/,
+  'unrelated normal-editor sections are hidden by the reversible workspace class');
+assert.match(html, /\.review-workspace>\.stage \.legend,\.review-workspace>\.stage>\.sources\{display:none\}/);
+assert.match(html, /\.review-workspace \.roilayer\{display:none !important\}/,
+  'source controls and the ROI editing overlay do not clutter active Review');
+assert.match(html, /EVENT_BOTTOM_THRESHOLD = 48/);
 assert.match(html, /\.ev\.selected-point\{[\s\S]*box-shadow:inset 3px 0 var\(--ball\)/);
 assert.match(html, /id="scoreboardStyle"[^>]*>[\s\S]*?<option value="koko" selected>/);
 assert.match(html, /<option value="ttcut">ttcut 原版<\/option>/);
@@ -27,7 +40,7 @@ for (const id of ['openTournament', 'tournamentPanel', 'tournamentPick', 'thMatc
 for (const id of ['reviewStart', 'reviewPanel', 'reviewExit', 'reviewCount', 'reviewTime',
   'reviewConfidence', 'reviewStatus', 'reviewScore', 'reviewProgress', 'reviewPrev',
   'reviewNext', 'reviewConfirm', 'reviewSkip', 'reviewRestore', 'reviewPlay',
-  'reviewAutoPlay', 'reviewAutoAdvance', 'reviewManualStatus'])
+  'reviewAutoPlay', 'reviewAutoAdvance', 'reviewManualStatus', 'reviewNotice'])
   assert.match(html, new RegExp(`id="${id}"`));
 assert.match(html, /id="reviewAutoPlay" checked/);
 assert.match(html, /id="reviewAutoAdvance" checked/);
@@ -66,19 +79,31 @@ assert.doesNotMatch(html, /(^|\n)\s*input:-webkit-autofill/,
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { resetReviewProgress(); rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); reconcileReviewState(); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,pendingPlay,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex(),reviewActive,reviewIndex,reviewStates:rallyCandidates.map((_,i)=>reviewStateAt(i)),reviewProgress:reviewProgress(),manualReviewInProgress:manualReviewInProgress(),manualReviewNotice:manualReview.notice}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget, enterReviewMode, exitReviewMode, selectReviewCandidate, moveReviewCandidate, reviewConfirmServe, reviewManualServe, reviewScore, reviewSkip, reviewRestore, reviewStartTime, findNextUnreviewedCandidateAfter, reconcileReviewState };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { resetReviewProgress(); rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); reconcileReviewState(); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,pendingPlay,sources,eventScroll:pendingEventScroll,eventAutoFollow,workspaceActive:$("appShell").classList.contains("review-workspace"),selectedPointIndex:selectedPointIndex(),reviewActive,reviewIndex,reviewStates:rallyCandidates.map((_,i)=>reviewStateAt(i)),reviewProgress:reviewProgress(),manualReviewInProgress:manualReviewInProgress(),manualReviewNotice:manualReview.notice}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget, enterReviewMode, exitReviewMode, selectReviewCandidate, moveReviewCandidate, reviewConfirmServe, reviewManualServe, reviewScore, reviewSkip, reviewRestore, reviewStartTime, findNextUnreviewedCandidateAfter, reconcileReviewState, eventNearBottom, returnToLatestEvent };\n})();';
 
 const nodes = new Map();
 function node(id) {
-  if (!nodes.has(id)) nodes.set(id, {
+  if (!nodes.has(id)) {
+    const classes = new Set();
+    nodes.set(id, {
     id, value: id === 'fps' ? '30' : '', innerHTML: '', textContent: '',
     checked: id === 'reviewAutoPlay' || id === 'reviewAutoAdvance',
-    scrollTop: 0, scrollHeight: 900,
+    hidden: false, scrollTop: 0, scrollHeight: 900, clientHeight: 300,
     listeners: {}, style: {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
     querySelectorAll() { return []; },
-    classList: {add() {}, remove() {}, toggle() {}},
+    classList: {
+      add(...names) { names.forEach(name => classes.add(name)); },
+      remove(...names) { names.forEach(name => classes.delete(name)); },
+      toggle(name, force) {
+        const on = force === undefined ? !classes.has(name) : !!force;
+        if (on) classes.add(name); else classes.delete(name);
+        return on;
+      },
+      contains(name) { return classes.has(name); }
+    },
   });
+  }
   return nodes.get(id);
 }
 const document = {
@@ -161,11 +186,19 @@ context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},snaps:[],
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 assert.equal(context.testUI.enterReviewMode(), true);
 assert.equal(context.testUI.state().reviewIndex, 0, 'first unreviewed candidate is selected');
+assert.equal(context.testUI.state().workspaceActive, true,
+  'entering Review applies the dedicated workspace class');
+assert.equal(node('reviewPanel').hidden, false, 'Review controls are visible in the workspace');
 assert.equal(video.currentTime, 4.2, 'Review entry seeks to 0.8 second pre-roll');
 assert.equal(video.paused, true, 'Review entry pauses');
 assert.equal(node('reviewCount').textContent, '候選 01 / 8');
 assert.match(node('reviewScore').innerHTML, /第 <b>3<\/b> 局/);
 assert.match(node('reviewScore').innerHTML, /局數 <b>1–1<\/b>/);
+assert.equal(node('reviewHudGame').textContent, '第 3 局');
+assert.equal(node('reviewHudGames').textContent, '局數 1–1');
+assert.equal(node('reviewHudPointA').textContent, 7);
+assert.equal(node('reviewHudPointB').textContent, 5);
+assert.match(node('reviewHudCandidate').textContent, /候選 1 \/ 8/);
 
 context.testUI.handleKeydown({key:']',target:{tagName:'DIV'},preventDefault(){}});
 assert.equal(context.testUI.state().reviewIndex, 1, '] navigates to the next candidate');
@@ -185,6 +218,8 @@ assert.equal(context.testUI.events()[0].t, 5);
 assert.equal(video.paused, false, 'auto-play after Enter defaults on');
 context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
 assert.equal(context.testUI.events().length, 1, 'Enter cannot double-add S');
+assert.equal(node('reviewNotice').hidden, false,
+  'Review-only notices stay visible even while the normal render section is hidden');
 
 video.currentTime = 8;
 context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
@@ -193,6 +228,12 @@ assert.equal(context.testUI.events()[1].winner, 'A', 'A uses the normal point ev
 assert.equal(context.testUI.state().reviewStates[0], 'completed');
 assert.equal(context.testUI.state().reviewIndex, 1, 'A auto-advances to next unreviewed');
 assert.equal(video.paused, true, 'auto-advanced candidate is paused');
+context.testUI.paint({cur:{a:8,b:5,gA:1,gB:1,gameNo:3,server:1},snaps:[null,
+  {a:8,b:5,gA:1,gB:1,gameNo:3,server:1,won:false}],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudPointA').textContent, 8, 'HUD updates from authoritative fold after A scores');
+assert.match(node('reviewHudCandidate').textContent, /候選 2 \/ 8 · 完成 1/,
+  'HUD candidate progress updates without counting manual rallies');
 context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
 assert.equal(context.testUI.events()[1].highlight, true,
   'H after auto-advance marks the just-completed rally');
@@ -260,6 +301,10 @@ for (const editable of [{tagName:'INPUT'}, {tagName:'TEXTAREA'}, {tagName:'SELEC
   assert.equal(context.testUI.state().reviewIndex, index);
 }
 context.testUI.exitReviewMode();
+assert.equal(context.testUI.state().workspaceActive, false,
+  'exiting Review removes the workspace class and restores normal layout');
+assert.equal(node('reviewPanel').hidden, true);
+assert.equal(node('eventLatest').hidden, true);
 
 // End-to-end synthetic workload: five regular rallies, two false positives,
 // and one low-confidence real rally, completed without mouse interaction.
@@ -698,6 +743,76 @@ context.testUI.paint(foldState(2), context.testUI.state().eventScroll);
 assert.equal(node('stream').scrollTop, 173, 'star toggle preserves scrollTop after repaint');
 assert.equal(node('highlightCount').textContent, 1);
 assert.match(node('stream').innerHTML, /highlight-badge">★ 精彩球/);
+
+// Long Review workspace scenario: browse history without being yanked to the
+// bottom, preserve historical edits, then return to live follow for a missed rally.
+const longEvents = Array.from({length:11}, (_, index) => [
+  {t:10 + index * 18,type:'serve'},
+  {t:14 + index * 18,type:'point',winner:index % 2 ? 'B' : 'A'}
+]).flat();
+const longCandidate = {...reviewCandidates[0],start:250,end:254};
+context.testUI.setEvents(longEvents);
+context.testUI.setCandidates([longCandidate]);
+node('stream').scrollHeight = 1600; node('stream').clientHeight = 300;
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:0},
+  snaps:Array(longEvents.length).fill(null),cuts:{n:0,seconds:0,outSeconds:0,pct:0},
+  ok:true,stats:null});
+context.testUI.enterReviewMode();
+assert.equal(node('stream').scrollTop, 1600, 'Review opens with the newest event visible');
+node('stream').scrollTop = 420;
+node('stream').listeners.scroll();
+assert.equal(context.testUI.state().eventAutoFollow, false,
+  'scrolling well above the bottom pauses event auto-follow');
+assert.equal(node('eventLatest').hidden, false, 'return-to-latest affordance appears');
+context.testUI.toggleHighlightAt(1);
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:0},
+  snaps:Array(longEvents.length).fill(null),cuts:{n:0,seconds:0,outSeconds:0,pct:0},
+  ok:true,stats:null}, context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 420,
+  'historical Highlight edit preserves a long event list scroll position');
+node('stream').listeners.click({target:target({'.ev':{dataset:{i:'3'}}})});
+assert.equal(video.currentTime, longEvents[3].t, 'historical row click still seeks in Review workspace');
+node('eventLatest').listeners.click();
+assert.equal(context.testUI.state().eventAutoFollow, true);
+assert.equal(node('stream').scrollTop, 1600);
+assert.equal(node('eventLatest').hidden, true);
+
+video.currentTime = 220;
+assert.equal(context.testUI.reviewManualServe(), true);
+video.currentTime = 224;
+assert.equal(context.testUI.reviewScore('A'), true);
+node('stream').scrollHeight = 1750;
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null},
+  context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 1750,
+  'manual S/A follows the newest event once live follow is re-enabled');
+assert.equal(node('reviewHudPointA').textContent, 7,
+  'manual rally score is reflected by the authoritative HUD fold');
+assert.equal(context.testUI.state().reviewIndex, 0,
+  'manual rally auto-advances to the later unreviewed candidate');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:0,skipped:0,unreviewed:1}, 'manual rally leaves candidate progress unchanged');
+
+context.testUI.handleKeydown({key:'N',target:{tagName:'DIV'},preventDefault(){}});
+context.testUI.paint({cur:{a:0,b:0,gA:2,gB:1,gameNo:4,server:0},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudGame').textContent, '第 4 局', 'HUD updates after N/new game');
+assert.equal(node('reviewHudGames').textContent, '局數 2–1');
+context.testUI.undo();
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudGame').textContent, '第 3 局', 'HUD updates after Undo');
+const manualPointIndex = context.testUI.events().length - 1;
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualPointIndex)}}})});
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:0},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudPointA').textContent, 6, 'HUD updates after manual event deletion');
+context.testUI.exitReviewMode();
 
 // Candidate review, confirmed serve, and normal scoring all clear old selection.
 context.testUI.setEvents([

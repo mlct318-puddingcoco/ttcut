@@ -6,6 +6,21 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.4.2 — Review Workspace
+
+- Rally Review Mode now switches to a dedicated desktop workspace with a sticky
+  authoritative score/game HUD, video preview, independently scrolling event
+  history below the video, and a compact Review-only control rail.
+- ROI/detector, intro, output, render, statistics, and Tournament Highlight
+  controls are hidden only while Review is active and return unchanged on exit.
+- The event history keeps the existing single DOM/render source and click-to-seek,
+  selection, deletion, and Highlight behavior. New events follow the bottom only
+  while live follow is enabled; scrolling upward pauses it and shows a
+  **Return to latest event** button. Historical edits preserve scroll position.
+- The HUD is repainted from the existing Python `/fold` result, so scoring, new
+  games, Undo, deletion, JSON events, and manual missed rallies cannot drift from
+  the normal editor score. Manual rallies still do not affect candidate progress.
+
 ## Koko v1.4.1 — Manual Missed-Rally Review
 
 - In Rally Review Mode, Enter still confirms the selected detector candidate,
