@@ -1529,6 +1529,8 @@ HTML = r"""<meta charset="utf-8">
   .review-score{margin:8px 0;font-size:12px;line-height:1.55;color:var(--ink-dim)}
   .review-score b{color:var(--ink);font-weight:500}
   .review-progress{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-bottom:8px}
+  .review-status{margin:-2px 0 8px;padding:6px 8px;border-left:2px solid var(--ball);
+    background:rgba(255,122,24,.08);color:var(--ink);font-size:11.5px}
   .review-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}
   .review-actions .wide{grid-column:1/-1}
   .review-prefs{display:grid;gap:5px;margin:9px 0;color:var(--ink-dim);font-size:11.5px}
@@ -1785,6 +1787,7 @@ HTML = r"""<meta charset="utf-8">
       </div>
       <div class="review-score" id="reviewScore">比分資料準備中…</div>
       <div class="review-progress" id="reviewProgress">已完成 0 | 跳過 0 | 未審 0</div>
+      <div class="review-status" id="reviewManualStatus" hidden></div>
       <div class="review-actions">
         <button class="btn" id="reviewPrev">上一個 [</button>
         <button class="btn" id="reviewNext">下一個 ]</button>
@@ -1798,7 +1801,8 @@ HTML = r"""<meta charset="utf-8">
         <label><input type="checkbox" id="reviewAutoAdvance" checked> A/B 得分後自動到下一候選</label>
       </div>
       <div class="review-legend">
-        <span><kbd>Enter</kbd>確認發球</span><span><kbd>A/B</kbd>得分</span>
+        <span><kbd>Enter</kbd>確認候選發球</span><span><kbd>S</kbd>手動補標發球</span>
+        <span><kbd>A/B</kbd>得分</span>
         <span><kbd>H</kbd>精彩球</span><span><kbd>X</kbd>跳過</span>
         <span><kbd>[ ]</kbd>候選</span><span><kbd>Space</kbd>播放</span>
         <span><kbd>← →</kbd>逐格</span><span><kbd>⇧← →</kbd>1 秒</span>
@@ -1943,6 +1947,7 @@ HTML = r"""<meta charset="utf-8">
   // Candidates are ephemeral detector results, so Review progress is deliberately
   // session-local and keyed by the candidate objects plus the exact event objects.
   let rallyReview = new Map(), reviewActive = false, reviewIndex = -1;
+  let manualReview = {serveEvents:[], pointEvent:null, notice:''};
   let rallySelectedIndex = -1, latestFoldState = null;
   let roi = null, roiSelecting = false, roiDrag = null;
   let matchSerial = 0;
@@ -2630,11 +2635,14 @@ HTML = r"""<meta charset="utf-8">
     events.sort((a,b) => a.t - b.t);
     return event;
   }
-  function add(type, winner) {
+  function add(type, winner, {associateReview=true, onCreate=null}={}) {
     if (!video) return null;
     const t = Math.round(now() * fps()) / fps();
     const event = addAt(type, t, winner);
-    associateManualReviewEvent(event);
+    if (associateReview) associateCandidateReviewEvent(event);
+    if (onCreate) onCreate(event);
+    if (type === 'game' && manualReviewInProgress())
+      manualReview = {serveEvents:[], pointEvent:null, notice:''};
     refresh({eventScroll:'latest'});
     return event;
   }
@@ -2701,8 +2709,13 @@ HTML = r"""<meta charset="utf-8">
      manual S only while its playhead is still at that candidate start. */
   function resetReviewProgress() {
     rallyReview = new Map(); reviewActive = false; reviewIndex = -1;
+    manualReview = {serveEvents:[], pointEvent:null, notice:''};
     rallySelectedIndex = -1;
     $('reviewPanel').hidden = true;
+  }
+  function manualReviewInProgress() {
+    return manualReview.serveEvents.some(event => events.includes(event)) &&
+      !events.includes(manualReview.pointEvent);
   }
   function reviewRecord(candidate, create=true) {
     if (!candidate) return null;
@@ -2713,7 +2726,7 @@ HTML = r"""<meta charset="utf-8">
     }
     return record || null;
   }
-  function associateManualReviewEvent(event) {
+  function associateCandidateReviewEvent(event) {
     if (!event) return;
     if (event.type === 'serve') {
       const candidate = rallyCandidates[rallySelectedIndex];
@@ -2752,6 +2765,17 @@ HTML = r"""<meta charset="utf-8">
       if (boundary) { record.serveEvent = null; record.pointEvent = null; }
       if (record.serveEvent || record.pointEvent) record.skipped = false;
     }
+    manualReview.serveEvents = manualReview.serveEvents.filter(event => events.includes(event));
+    if (!manualReview.serveEvents.length) {
+      manualReview = {serveEvents:[], pointEvent:null, notice:''};
+      return;
+    }
+    const serveIndex = Math.max(...manualReview.serveEvents.map(event => events.indexOf(event)));
+    let pointIndex = events.indexOf(manualReview.pointEvent);
+    if (pointIndex <= serveIndex || !completed.has(pointIndex)) {
+      manualReview.pointEvent = null;
+      pointIndex = -1;
+    }
   }
   function reviewStateAt(index) {
     const candidate = rallyCandidates[index];
@@ -2789,6 +2813,14 @@ HTML = r"""<meta charset="utf-8">
     }
     return -1;
   }
+  function findNextUnreviewedCandidateAfter(globalTime) {
+    let best = -1, bestTime = Infinity;
+    rallyCandidates.forEach((candidate, index) => {
+      if (reviewStateAt(index) !== 'unreviewed' || candidate.start <= globalTime + .001) return;
+      if (candidate.start < bestTime) { best = index; bestTime = candidate.start; }
+    });
+    return best;
+  }
   function paintReview() {
     $('reviewPanel').hidden = !reviewActive;
     if (!reviewActive) return;
@@ -2796,6 +2828,7 @@ HTML = r"""<meta charset="utf-8">
     const candidate = rallyCandidates[reviewIndex];
     if (!candidate) { exitReviewMode(); return; }
     const state = reviewStateAt(reviewIndex), progress = reviewProgress();
+    const manualOpen = manualReviewInProgress();
     $('reviewCount').textContent = `候選 ${String(reviewIndex + 1).padStart(2,'0')} / ${rallyCandidates.length}`;
     $('reviewTime').textContent = `全域 ${fmt(candidate.start)}`;
     const low = candidate.confidenceTier === 'low';
@@ -2807,12 +2840,15 @@ HTML = r"""<meta charset="utf-8">
       ? `第 <b>${cur.gameNo}</b> 局 · <b>${escHtml(nm[0])} ${cur.a}</b>　<b>${escHtml(nm[1])} ${cur.b}</b><br>局數 <b>${cur.gA}–${cur.gB}</b>`
       : '比分資料準備中…';
     $('reviewProgress').textContent = `已完成 ${progress.completed} | 跳過 ${progress.skipped} | 未審 ${progress.unreviewed}`;
+    const manualStatus = manualOpen ? '手動補標中：等待 A/B 得分' : manualReview.notice;
+    $('reviewManualStatus').hidden = !manualStatus;
+    $('reviewManualStatus').textContent = manualStatus;
     $('reviewPrev').disabled = reviewIndex <= 0;
     $('reviewNext').disabled = reviewIndex >= rallyCandidates.length - 1;
-    $('reviewConfirm').disabled = state !== 'unreviewed';
+    $('reviewConfirm').disabled = manualOpen || state !== 'unreviewed';
     $('reviewConfirm').textContent = state === 'confirmed' ? '已確認發球' :
       state === 'completed' ? '已完成' : state === 'skipped' ? '已跳過' : '確認發球 Enter';
-    $('reviewSkip').disabled = state !== 'unreviewed';
+    $('reviewSkip').disabled = manualOpen || state !== 'unreviewed';
     $('reviewRestore').hidden = state !== 'skipped';
   }
   function selectReviewCandidate(index, seek=true) {
@@ -2847,6 +2883,11 @@ HTML = r"""<meta charset="utf-8">
   }
   function reviewConfirmServe() {
     if (!reviewActive || !video) return false;
+    reconcileReviewState();
+    if (manualReviewInProgress()) {
+      banner('手動補標回合進行中；請先按 A/B 得分，或按 Z 復原手動 S。');
+      return false;
+    }
     const candidate = rallyCandidates[reviewIndex], state = reviewStateAt(reviewIndex);
     if (state === 'confirmed') { banner('這個候選已確認發球，不會重複加入 S。'); return false; }
     if (state !== 'unreviewed') { banner('這個候選已完成或跳過；請先恢復未審再操作。'); return false; }
@@ -2861,8 +2902,37 @@ HTML = r"""<meta charset="utf-8">
     refresh({eventScroll:'latest'}); paintReview();
     return true;
   }
+  function reviewManualServe() {
+    if (!reviewActive || !video) return false;
+    reconcileReviewState();
+    if (!manualReviewInProgress())
+      manualReview = {serveEvents:[], pointEvent:null, notice:''};
+    const event = add('serve', undefined, {associateReview:false, onCreate: serveEvent => {
+      manualReview.serveEvents.push(serveEvent);
+      manualReview.pointEvent = null; manualReview.notice = '';
+    }});
+    paintReview();
+    return !!event;
+  }
   function reviewScore(winner) {
     if (!reviewActive || !video) return false;
+    reconcileReviewState();
+    if (manualReviewInProgress()) {
+      const point = add('point', winner, {associateReview:false, onCreate: pointEvent => {
+        manualReview.pointEvent = pointEvent; manualReview.notice = '';
+      }});
+      if (!point) return false;
+      let next = -1;
+      if ($('reviewAutoAdvance').checked)
+        next = findNextUnreviewedCandidateAfter(point.t);
+      if (next >= 0) selectReviewCandidate(next, true);
+      else {
+        if (video) video.pause();
+        if ($('reviewAutoAdvance').checked) manualReview.notice = '後續沒有未審候選';
+        paintRallies(); paintReview();
+      }
+      return true;
+    }
     const state = reviewStateAt(reviewIndex);
     if (state !== 'confirmed') {
       banner(state === 'completed' ? '這個候選已完成，不會重複計分。' : '請先按 Enter 確認目前候選的發球。');
@@ -2880,6 +2950,11 @@ HTML = r"""<meta charset="utf-8">
   }
   function reviewSkip() {
     if (!reviewActive) return false;
+    reconcileReviewState();
+    if (manualReviewInProgress()) {
+      banner('手動補標回合進行中；請先按 A/B 得分，或按 Z 復原手動 S。');
+      return false;
+    }
     const state = reviewStateAt(reviewIndex);
     if (state === 'confirmed') { banner('已確認發球；請先按 Z 復原 S，才可標記為非 Rally。'); return false; }
     if (state !== 'unreviewed') return false;
@@ -3248,7 +3323,7 @@ HTML = r"""<meta charset="utf-8">
       case '[':           if (reviewActive) moveReviewCandidate(-1); else return; break;
       case ']':           if (reviewActive) moveReviewCandidate(1); else return; break;
       case 'Enter':       if (reviewActive) reviewConfirmServe(); else return; break;
-      case 's': case 'S': reviewActive ? reviewConfirmServe() : add('serve'); break;
+      case 's': case 'S': reviewActive ? reviewManualServe() : add('serve'); break;
       case 'a': case 'A': reviewActive ? reviewScore('A') : add('point', 'A'); break;
       case 'b': case 'B': reviewActive ? reviewScore('B') : add('point', 'B'); break;
       case 'h': case 'H': toggleSelectedOrLatestHighlight(); break;

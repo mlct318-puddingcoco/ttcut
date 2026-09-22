@@ -6,6 +6,19 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.4.1 — Manual Missed-Rally Review
+
+- In Rally Review Mode, Enter still confirms the selected detector candidate,
+  while S now creates a normal serve at the current global playhead time without
+  associating it with any candidate.
+- A/B completes an open manual rally through the normal event path. With auto-
+  advance enabled, Review moves to the earliest unreviewed candidate strictly
+  after the manual point; if none exists, Review stays open and reports it.
+- Manual rallies do not affect candidate progress. Enter and X are guarded while
+  a manual serve awaits a score; Undo and event deletion reconcile the manual
+  state without changing candidate state, and H still targets the latest
+  completed rally after auto-advance.
+
 ## Koko v1.4 — Rally Review Mode
 
 - Added a focused, keyboard-first review panel for chronological detector
