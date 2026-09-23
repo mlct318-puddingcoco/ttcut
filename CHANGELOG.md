@@ -6,6 +6,19 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.4.3 — Review HUD Serve Indicator
+
+- The Review HUD now shows `🏓 應發球：<player>` without increasing its desktop
+  row height. Empty player names use the same A/B fallback as the normal editor.
+- Both the normal editor's **應由 … 發球** label and the Review HUD call the same
+  display helper over `fold_full().cur.server`; no serve-rotation state or logic
+  is duplicated in JavaScript.
+- The indicator therefore follows the existing two-point rotation, one-point
+  deuce rotation, first-server/new-game behavior, scoring, Undo, deletion, JSON
+  reload, candidate confirmation, and manual missed-rally workflow automatically.
+- An open S event does not alter the label: `cur.server` means the player who
+  should serve the next point, exactly as it already does in the normal editor.
+
 ## Koko v1.4.2 — Review Workspace
 
 - Rally Review Mode now switches to a dedicated desktop workspace with a sticky

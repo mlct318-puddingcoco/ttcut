@@ -15,8 +15,13 @@ assert.match(html, /\.stream\{height:clamp\(260px,36vh,330px\);flex:0 0 clamp\(2
 assert.match(html, /\.rail\{[\s\S]*overflow-y:auto/,
   'narrow-height layouts can scroll to the sections below the event viewport');
 assert.match(html, /id="appShell"/);
-assert.match(html, /id="reviewHud"[\s\S]*id="reviewHudGame"[\s\S]*id="reviewHudGames"[\s\S]*id="reviewHudPointA"[\s\S]*id="reviewHudPointB"[\s\S]*id="reviewHudCandidate"/,
-  'Review HUD exposes game, games, points, and candidate progress');
+assert.match(html, /id="reviewHud"[\s\S]*id="reviewHudGame"[\s\S]*id="reviewHudGames"[\s\S]*id="reviewHudPointA"[\s\S]*id="reviewHudPointB"[\s\S]*id="reviewHudServer"[\s\S]*id="reviewHudCandidate"/,
+  'Review HUD exposes game, games, points, authoritative server, and candidate progress');
+assert.match(html, /const serverName = \(cur, nm=names\(\)\) => nm\[cur\.server\]/,
+  'server display is a label helper over the authoritative fold field, not a second rotation algorithm');
+assert.match(html, /\$\('reviewHudServer'\)\.textContent = `🏓 應發球：\$\{serverName\(cur, nm\)\}`/);
+assert.match(html, /\$\('expServer'\)\.textContent = serverName\(cur, nm\)/,
+  'normal editor and Review HUD use the same server label helper');
 assert.match(html, /id="eventPanel"[\s\S]*id="eventLatest"[\s\S]*id="stream"[^>]*tabindex="0"/,
   'the shared event list is an independently focusable Review panel');
 assert.match(html, /\.review-workspace\{[\s\S]*grid-template-areas:"hud hud" "stage review" "events review"/,
@@ -182,6 +187,7 @@ const reviewCandidates = [5,12,25,39,52,68,84,101].map((start, index) => ({
 }));
 context.testUI.setEvents([]);
 context.testUI.setCandidates(reviewCandidates);
+node('nameA').value = '許宸愷'; node('nameB').value = '對手';
 context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},snaps:[],
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 assert.equal(context.testUI.enterReviewMode(), true);
@@ -198,7 +204,20 @@ assert.equal(node('reviewHudGame').textContent, '第 3 局');
 assert.equal(node('reviewHudGames').textContent, '局數 1–1');
 assert.equal(node('reviewHudPointA').textContent, 7);
 assert.equal(node('reviewHudPointB').textContent, 5);
+assert.equal(node('expServer').textContent, '許宸愷');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷',
+  'initial Review server uses the player name from cur.server');
 assert.match(node('reviewHudCandidate').textContent, /候選 1 \/ 8/);
+
+node('nameA').value = ''; node('nameB').value = '';
+context.testUI.paint({cur:{a:0,b:0,gA:0,gB:0,gameNo:1,server:1},snaps:[],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('expServer').textContent, 'B');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：B',
+  'empty player names fall back to the A/B labels used by the normal editor');
+node('nameA').value = '許宸愷'; node('nameB').value = '對手';
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},snaps:[],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 
 context.testUI.handleKeydown({key:']',target:{tagName:'DIV'},preventDefault(){}});
 assert.equal(context.testUI.state().reviewIndex, 1, '] navigates to the next candidate');
@@ -215,6 +234,8 @@ context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(
 assert.equal(context.testUI.events().length, 1);
 assert.equal(context.testUI.events()[0].type, 'serve');
 assert.equal(context.testUI.events()[0].t, 5);
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷',
+  'an open candidate-linked serve keeps the next-server fold meaning');
 assert.equal(video.paused, false, 'auto-play after Enter defaults on');
 context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
 assert.equal(context.testUI.events().length, 1, 'Enter cannot double-add S');
@@ -232,8 +253,30 @@ context.testUI.paint({cur:{a:8,b:5,gA:1,gB:1,gameNo:3,server:1},snaps:[null,
   {a:8,b:5,gA:1,gB:1,gameNo:3,server:1,won:false}],
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 assert.equal(node('reviewHudPointA').textContent, 8, 'HUD updates from authoritative fold after A scores');
+assert.equal(node('expServer').textContent, '對手');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'candidate-linked scoring updates both server indicators from the same fold state');
 assert.match(node('reviewHudCandidate').textContent, /候選 2 \/ 8 · 完成 1/,
   'HUD candidate progress updates without counting manual rallies');
+const serverScoreSequence = [
+  [0,0,0],[1,0,0],[2,0,1],[3,0,1],[4,0,0],[5,0,0],[6,0,1],
+  [7,0,1],[8,0,0],[9,0,0],[10,0,1],[10,1,1],[10,2,0],[10,3,0],
+  [10,4,1],[10,5,1],[10,6,0],[10,7,0],[10,8,1],[10,9,1],
+  [10,10,0],[11,10,1],[11,11,0]
+];
+for (const [a,b,server] of serverScoreSequence) {
+  context.testUI.paint({cur:{a,b,gA:1,gB:1,gameNo:3,server},
+    snaps:Array(context.testUI.events().length).fill(null),
+    cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+  const expected = server ? '對手' : '許宸愷';
+  assert.equal(node('expServer').textContent, expected,
+    `normal server is correct at ${a}:${b}`);
+  assert.equal(node('reviewHudServer').textContent, `🏓 應發球：${expected}`,
+    `Review server mirrors normal editor at ${a}:${b}`);
+}
+context.testUI.paint({cur:{a:8,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
 assert.equal(context.testUI.events()[1].highlight, true,
   'H after auto-advance marks the just-completed rally');
@@ -354,6 +397,12 @@ context.testUI.handleKeydown({key:'S',target:{tagName:'DIV'},preventDefault(){}}
 assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event => [event.t,event.type]))),
   [[50,'serve'],[54,'point'],[60,'serve']],
   'Review S adds a normal serve at the current playhead instead of the candidate start');
+context.testUI.paint({cur:{a:1,b:0,gA:0,gB:0,gameNo:1,server:0},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('expServer').textContent, '許宸愷');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷',
+  'manual S without a point preserves the authoritative next-server meaning');
 assert.deepEqual(Array.from(context.testUI.state().reviewStates), ['completed','unreviewed'],
   'manual S does not attach to or mutate the selected candidate');
 assert.equal(context.testUI.state().manualReviewInProgress, true);
@@ -370,6 +419,12 @@ assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event =>
   [event.t,event.type,event.winner || null]))),
   [[50,'serve',null],[54,'point','A'],[60,'serve',null],[64,'point','B']],
   'manual S/B uses ordinary authoritative events');
+context.testUI.paint({cur:{a:1,b:1,gA:0,gB:0,gameNo:1,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('expServer').textContent, '對手');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'manual missed-rally score updates both server indicators from the same fold state');
 assert.equal(context.testUI.state().reviewIndex, 1,
   'manual score advances strictly forward to the first unreviewed candidate');
 assert.equal(video.currentTime, 69.2, 'manual auto-advance uses normal candidate pre-roll');
@@ -754,7 +809,7 @@ const longCandidate = {...reviewCandidates[0],start:250,end:254};
 context.testUI.setEvents(longEvents);
 context.testUI.setCandidates([longCandidate]);
 node('stream').scrollHeight = 1600; node('stream').clientHeight = 300;
-context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:0},
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
   snaps:Array(longEvents.length).fill(null),cuts:{n:0,seconds:0,outSeconds:0,pct:0},
   ok:true,stats:null});
 context.testUI.enterReviewMode();
@@ -765,7 +820,7 @@ assert.equal(context.testUI.state().eventAutoFollow, false,
   'scrolling well above the bottom pauses event auto-follow');
 assert.equal(node('eventLatest').hidden, false, 'return-to-latest affordance appears');
 context.testUI.toggleHighlightAt(1);
-context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:0},
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
   snaps:Array(longEvents.length).fill(null),cuts:{n:0,seconds:0,outSeconds:0,pct:0},
   ok:true,stats:null}, context.testUI.state().eventScroll);
 assert.equal(node('stream').scrollTop, 420,
@@ -782,7 +837,7 @@ assert.equal(context.testUI.reviewManualServe(), true);
 video.currentTime = 224;
 assert.equal(context.testUI.reviewScore('A'), true);
 node('stream').scrollHeight = 1750;
-context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:1},
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},
   snaps:Array(context.testUI.events().length).fill(null),
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null},
   context.testUI.state().eventScroll);
@@ -790,28 +845,49 @@ assert.equal(node('stream').scrollTop, 1750,
   'manual S/A follows the newest event once live follow is re-enabled');
 assert.equal(node('reviewHudPointA').textContent, 7,
   'manual rally score is reflected by the authoritative HUD fold');
+assert.equal(node('reviewHudServer').textContent, `🏓 應發球：${node('expServer').textContent}`,
+  'long manual-rally scenario keeps Review and normal server displays identical');
 assert.equal(context.testUI.state().reviewIndex, 0,
   'manual rally auto-advances to the later unreviewed candidate');
 assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
   {completed:0,skipped:0,unreviewed:1}, 'manual rally leaves candidate progress unchanged');
 
 context.testUI.handleKeydown({key:'N',target:{tagName:'DIV'},preventDefault(){}});
-context.testUI.paint({cur:{a:0,b:0,gA:2,gB:1,gameNo:4,server:0},
+context.testUI.paint({cur:{a:0,b:0,gA:2,gB:1,gameNo:4,server:1},
   snaps:Array(context.testUI.events().length).fill(null),
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 assert.equal(node('reviewHudGame').textContent, '第 4 局', 'HUD updates after N/new game');
 assert.equal(node('reviewHudGames').textContent, '局數 2–1');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手');
 context.testUI.undo();
-context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:1},
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},
   snaps:Array(context.testUI.events().length).fill(null),
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 assert.equal(node('reviewHudGame').textContent, '第 3 局', 'HUD updates after Undo');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷');
 const manualPointIndex = context.testUI.events().length - 1;
 node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualPointIndex)}}})});
-context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:0},
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
   snaps:Array(context.testUI.events().length).fill(null),
   cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
 assert.equal(node('reviewHudPointA').textContent, 6, 'HUD updates after manual event deletion');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'point deletion repaints the server from the new fold result');
+const manualServeIndex = context.testUI.events().length - 1;
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualServeIndex)}}})});
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'serve deletion mirrors the unchanged authoritative server state');
+context.testUI.handleKeydown({key:'N',target:{tagName:'DIV'},preventDefault(){}});
+const manualGameIndex = context.testUI.events().length - 1;
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualGameIndex)}}})});
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'game deletion restores the server supplied by the recomputed fold');
 context.testUI.exitReviewMode();
 
 // Candidate review, confirmed serve, and normal scoring all clear old selection.

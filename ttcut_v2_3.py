@@ -1557,8 +1557,11 @@ HTML = r"""<meta charset="utf-8">
     box-shadow:0 4px 18px rgba(0,0,0,.22)}
   .review-hud .hud-label{font:700 11px var(--body);letter-spacing:.11em;
     text-transform:uppercase;color:var(--ball);white-space:nowrap}
-  .review-hud .hud-game,.review-hud .hud-games,.review-hud .hud-candidate{
+  .review-hud .hud-game,.review-hud .hud-games,.review-hud .hud-server,
+  .review-hud .hud-candidate{
     color:var(--ink-dim);white-space:nowrap}
+  .review-hud .hud-server{padding:4px 8px;border:1px solid rgba(255,122,24,.55);
+    border-radius:3px;color:var(--ink);background:rgba(255,122,24,.08)}
   .review-hud .hud-score{display:flex;align-items:baseline;justify-content:center;
     gap:9px;min-width:0;flex:1;font-variant-numeric:tabular-nums}
   .review-hud .hud-name{max-width:22ch;overflow:hidden;text-overflow:ellipsis;
@@ -1769,6 +1772,7 @@ HTML = r"""<meta charset="utf-8">
       <strong class="hud-point" id="reviewHudPointB">0</strong>
       <span class="hud-name" id="reviewHudNameB">選手 B</span>
     </div>
+    <span class="hud-server" id="reviewHudServer">🏓 應發球：—</span>
     <span class="hud-candidate" id="reviewHudCandidate">候選 — / —</span>
   </section>
 
@@ -2035,6 +2039,7 @@ HTML = r"""<meta charset="utf-8">
   const scope  = () => $('scope').value;
   const firstServer = () => +$('firstServer').value;
   const names  = () => [$('nameA').value || 'A', $('nameB').value || 'B'];
+  const serverName = (cur, nm=names()) => nm[cur.server];
   const startGames  = () => [Math.max(0, num('sgA', 0)), Math.max(0, num('sgB', 0))];
   const startPoints = () => [Math.max(0, num('spA', 0)), Math.max(0, num('spB', 0))];
 
@@ -2803,10 +2808,12 @@ HTML = r"""<meta charset="utf-8">
       $('reviewHudGame').textContent = '第 — 局';
       $('reviewHudGames').textContent = '局數 —';
       $('reviewHudPointA').textContent = '—'; $('reviewHudPointB').textContent = '—';
+      $('reviewHudServer').textContent = '🏓 應發球：—';
     } else {
       $('reviewHudGame').textContent = `第 ${cur.gameNo} 局`;
       $('reviewHudGames').textContent = `局數 ${cur.gA}–${cur.gB}`;
       $('reviewHudPointA').textContent = cur.a; $('reviewHudPointB').textContent = cur.b;
+      $('reviewHudServer').textContent = `🏓 應發球：${serverName(cur, nm)}`;
     }
     $('reviewHudNameA').textContent = nm[0]; $('reviewHudNameB').textContent = nm[1];
     $('reviewHudCandidate').textContent = reviewIndex >= 0
@@ -3275,7 +3282,7 @@ HTML = r"""<meta charset="utf-8">
     $('gmA').textContent = cur.gA;  $('gmB').textContent = cur.gB;
     $('gameNo').textContent = cur.gameNo;
     $('ruleNote').textContent = deuce() === 'capped' ? ` · 封頂 ${capVal()}` : '';
-    $('expServer').textContent = nm[cur.server];
+    $('expServer').textContent = serverName(cur, nm);
     $('cardA').classList.toggle('serving', cur.server === 0);
     $('cardB').classList.toggle('serving', cur.server === 1);
 
