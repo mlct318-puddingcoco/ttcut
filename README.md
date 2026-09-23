@@ -61,6 +61,11 @@ That starts a local server on `127.0.0.1` and opens your browser. Then:
 6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
 7. Choose **Output organization**. New matches default to **One folder per match**; **Same folder** retains the previous layout. The suggested name uses all six structured intro fields, `<tournament>_<category>_<player A>(<school A>)VS<player B>(<school B>).mp4`, even when the intro is disabled; otherwise it falls back to `<source>.cut.mp4`. **Save As…** chooses the destination root and basename. Its choice stays fixed as you edit the intro.
 
+The tournament, category, player names, and school/sublabel level use one common
+font size by default. Only an individual row or side that exceeds its width box
+shrinks, and tournament/category text stays on one line. The three-second intro
+and 1280x720 thumbnail use the same typography calculation.
+
 With **One folder per match**, output goes to `<root>/<basename>/<basename>.mp4` and `<root>/<basename>/<basename>.thumbnail.jpg`; tags go to `<root>/<basename>/ttcut-data/<basename>.tags.json`. Automatic output uses `_2`, `_3`, and so on when that match folder already exists. **Same folder** keeps the MP4, optional thumbnail, and tags together beside the source or in the Save As destination; automatic output suffixes an existing MP4. The output preview lists all three planned paths. Source recordings stay in their original locations. **New match** clears source segments, markers, score, and custom output path while keeping the organization preference; **Exit ttcut** stops the local server. Ctrl-C remains available.
 
 ### Tournament Highlight Builder

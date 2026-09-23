@@ -6,6 +6,18 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.4.4 — Uniform Normal-Match Intro Typography
+
+- The four primary normal-match intro levels now share a 128 px base size at
+  1080p: tournament, category, player names, and school/rating sublabels.
+- Each tournament/category row and each player/sublabel side shrinks only when
+  its own width box overflows, down to a readable 64 px floor. Rows remain
+  single-line and scale proportionally at 4K and in the 1280x720 thumbnail.
+- Row centers moved minimally from 285/430/635/775 to 270/430/635/795 so the
+  larger category and fourth row retain clear, balanced vertical spacing.
+- Tournament Highlight Builder titles retain their existing 136/106/136/92
+  hierarchy; this change is scoped to structured normal-match intros.
+
 ## Koko v1.4.3 — Review HUD Serve Indicator
 
 - The Review HUD now shows `🏓 應發球：<player>` without increasing its desktop

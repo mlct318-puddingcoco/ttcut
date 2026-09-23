@@ -11,7 +11,7 @@ from unittest import mock
 
 from tournament_highlights import (
     COVER_OFFSET_SECONDS, INTRO_SECONDS,
-    TournamentError, apply_review, choose_profile, cover_frame_selection,
+    TournamentError, _write_title_ass, apply_review, choose_profile, cover_frame_selection,
     discover_tag_files, intro_background_selection, manifest_for, output_layout,
     output_stem, pair_highlights, prepare_intro_background, prepare_render,
     run_commands, scan_tournament, source_paths, validate_plan,
@@ -46,6 +46,20 @@ def write_doc(path, payload):
 
 
 class TournamentDiscoveryTests(unittest.TestCase):
+    def test_builder_title_keeps_legacy_hierarchy(self):
+        metadata = {"tournament": "盃賽", "title": "精彩好球",
+                    "protagonist": "許宸愷", "school": "光復國小"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "builder-title.ass"
+            with mock.patch("tournament_highlights.select_font",
+                            return_value="Xingkai TC"):
+                _write_title_ass(path, metadata, INTRO_SECONDS, (1920, 1080))
+            ass = path.read_text(encoding="utf-8")
+        self.assertIn(r"\pos(960,285)\fs136", ass)
+        self.assertIn(r"\pos(960,430)\fs106", ass)
+        self.assertIn(r"\pos(960,635)\fs136", ass)
+        self.assertIn(r"\pos(960,775)\fs92", ass)
+
     def test_single_source_absolute_and_legacy_basename_resolution(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "盃賽"

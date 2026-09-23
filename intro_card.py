@@ -8,6 +8,16 @@ FONT_PREFERENCES = ("Xingkai TC", "Kaiti TC", "Songti TC", "PingFang TC")
 SAMPLE_LINES = ("城市盃全國桌球錦標賽", "國小男生二年級團體賽",
                 "許宸愷 VS 曾柏誠", "光復國小    吉林國小")
 INTRO_FIELDS = ("tournament", "category", "playerA", "schoolA", "playerB", "schoolB")
+NORMAL_INTRO_BASE_SIZE = 128
+NORMAL_INTRO_MIN_SIZE = 64
+NORMAL_INTRO_WIDTHS = {
+    "tournament": 1660,
+    "category": 1660,
+    "playerA": 640,
+    "playerB": 640,
+    "schoolA": 640,
+    "schoolB": 640,
+}
 
 
 def installed_families():
@@ -61,8 +71,18 @@ def _text_units(value):
     return sum(1 if ord(ch) > 0x2e80 else .58 for ch in value)
 
 
-def _size_for(value, base, max_width):
-    return min(base, max(28, int(max_width / max(_text_units(value), 1))))
+def _size_for(value, base, max_width, minimum=28):
+    """Fit one unwrapped row deterministically, without enlarging short text."""
+    return min(base, max(minimum, int(max_width / max(_text_units(value), 1))))
+
+
+def structured_intro_sizes(intro):
+    """Return the normal-match row sizes at the 1920x1080 design baseline."""
+    return {
+        field: _size_for(str(intro.get(field, "")), NORMAL_INTRO_BASE_SIZE,
+                         max_width, NORMAL_INTRO_MIN_SIZE)
+        for field, max_width in NORMAL_INTRO_WIDTHS.items()
+    }
 
 
 def intro_ass(intro, width, height, duration, font):
@@ -87,24 +107,33 @@ Style: Intro,{clean_font},100,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,{bold}
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     rows = []
-    def add(line, x, y, size, max_width):
+    def add(line, x, y, size, max_width, minimum=28):
         safe = re.sub(r"[{}\\\r\n]", " ", str(line)).strip()
         if not safe:
             return
-        size = max(16, round(_size_for(safe, size, max_width) * scale))
+        size = max(16, round(_size_for(safe, size, max_width, minimum) * scale))
         outline = max(4, round(8 * scale))
         rows.append(f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Intro,,0,0,0,,"
                     f"{{\\an5\\pos({round(x*width/1920)},{round(y*height/1080)})"
                     f"\\fs{size}\\bord{outline}\\shad0}}{safe}")
     if structured:
-        add(intro.get("tournament", ""), 960, 285, 136, 1660)
-        add(intro.get("category", ""), 960, 430, 106, 1660)
-        add(intro.get("playerA", ""), 550, 635, 136, 640)
+        sizes = structured_intro_sizes(intro)
+        # Four equal visual levels. Only the individual field that exceeds its
+        # width box shrinks; the ASS script stays explicitly unwrapped.
+        add(intro.get("tournament", ""), 960, 270, sizes["tournament"], 1660,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("category", ""), 960, 430, sizes["category"], 1660,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("playerA", ""), 550, 635, sizes["playerA"], 640,
+            NORMAL_INTRO_MIN_SIZE)
         add("VS" if intro.get("playerA") or intro.get("playerB") else "",
             960, 635, 100, 190)
-        add(intro.get("playerB", ""), 1370, 635, 136, 640)
-        add(intro.get("schoolA", ""), 550, 775, 92, 640)
-        add(intro.get("schoolB", ""), 1370, 775, 92, 640)
+        add(intro.get("playerB", ""), 1370, 635, sizes["playerB"], 640,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("schoolA", ""), 550, 795, sizes["schoolA"], 640,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("schoolB", ""), 1370, 795, sizes["schoolB"], 640,
+            NORMAL_INTRO_MIN_SIZE)
     else:
         # v1 could contain arbitrary freeform matchup/school lines. Never discard them.
         for line, y, size in zip(list(lines)[:4], (285, 430, 635, 775),
