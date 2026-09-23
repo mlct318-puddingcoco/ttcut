@@ -454,7 +454,9 @@ def _write_title_ass(path, metadata, duration, size):
                        metadata.get("protagonist", ""),
                        metadata.get("school", "")]}
     font = select_font("")
-    Path(path).write_text(intro_ass(data, size[0], size[1], duration, font), encoding="utf-8")
+    Path(path).write_text(
+        intro_ass(data, size[0], size[1], duration, font, uniform_lines=True),
+        encoding="utf-8")
     return font
 
 

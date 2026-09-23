@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from intro_card import (UNIFORM_INTRO_BASE_SIZE, UNIFORM_INTRO_MIN_SIZE,
+                        uniform_intro_sizes)
 from tournament_highlights import (
     COVER_OFFSET_SECONDS, INTRO_SECONDS,
     TournamentError, _write_title_ass, apply_review, choose_profile, cover_frame_selection,
@@ -46,19 +48,61 @@ def write_doc(path, payload):
 
 
 class TournamentDiscoveryTests(unittest.TestCase):
-    def test_builder_title_keeps_legacy_hierarchy(self):
-        metadata = {"tournament": "盃賽", "title": "精彩好球",
-                    "protagonist": "許宸愷", "school": "光復國小"}
+    def write_builder_title(self, metadata, size=(1920, 1080)):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "builder-title.ass"
             with mock.patch("tournament_highlights.select_font",
                             return_value="Xingkai TC"):
-                _write_title_ass(path, metadata, INTRO_SECONDS, (1920, 1080))
-            ass = path.read_text(encoding="utf-8")
-        self.assertIn(r"\pos(960,285)\fs136", ass)
-        self.assertIn(r"\pos(960,430)\fs106", ass)
-        self.assertIn(r"\pos(960,635)\fs136", ass)
-        self.assertIn(r"\pos(960,775)\fs92", ass)
+                _write_title_ass(path, metadata, INTRO_SECONDS, size)
+            return path.read_text(encoding="utf-8")
+
+    def test_builder_short_rows_share_base_size_in_intro_4k_and_thumbnail(self):
+        metadata = {"tournament": "乒乒乓乓桌球旗艦館",
+                    "title": "950分超級初心者獎金賽",
+                    "protagonist": "宸愷精彩好球", "school": "光復國小"}
+        sizes = uniform_intro_sizes(metadata[key] for key in
+                                    ("tournament", "title", "protagonist", "school"))
+        self.assertEqual(sizes, (UNIFORM_INTRO_BASE_SIZE,) * 4)
+
+        full = self.write_builder_title(metadata)
+        four_k = self.write_builder_title(metadata, (3840, 2160))
+        thumb = self.write_builder_title(metadata, (1280, 720))
+        self.assertEqual(full.count(r"\fs128"), 4)
+        self.assertIn(r"\pos(960,270)\fs128", full)
+        self.assertIn(r"\pos(960,795)\fs128", full)
+        self.assertEqual(four_k.count(r"\fs256"), 4)
+        self.assertIn(r"\pos(1920,540)\fs256", four_k)
+        self.assertEqual(thumb.count(r"\fs85"), 4)
+        self.assertIn(r"\pos(640,180)\fs85", thumb)
+        self.assertIn(r"\pos(640,530)\fs85", thumb)
+
+    def test_builder_rows_shrink_independently_to_floor_and_never_wrap(self):
+        fields = ("tournament", "title", "protagonist", "school")
+        short = {"tournament": "短賽事", "title": "短組別",
+                 "protagonist": "精彩好球", "school": "短附註"}
+        long_values = {
+            "tournament": "超級國際城市桌球公開錦標賽年度總決賽特別邀請賽",
+            "title": "九百五十分超級初心者獎金挑戰賽男子單打年度總決賽",
+            "protagonist": "許宸愷年度最佳超級經典逆轉精彩好球特別精選輯",
+            "school": "非常非常長的學校名稱與球館代表隊附加資訊說明文字",
+        }
+        for changed in fields:
+            metadata = dict(short, **{changed: long_values[changed]})
+            sizes = uniform_intro_sizes(metadata[key] for key in fields)
+            changed_index = fields.index(changed)
+            self.assertLess(sizes[changed_index], UNIFORM_INTRO_BASE_SIZE)
+            self.assertGreaterEqual(sizes[changed_index], UNIFORM_INTRO_MIN_SIZE)
+            self.assertEqual([size for index, size in enumerate(sizes)
+                             if index != changed_index],
+                             [UNIFORM_INTRO_BASE_SIZE] * 3)
+        self.assertEqual(uniform_intro_sizes(("超長" * 100,))[0],
+                         UNIFORM_INTRO_MIN_SIZE)
+
+        wrapped = dict(short, tournament=long_values["tournament"] + "\n續行")
+        ass = self.write_builder_title(wrapped)
+        self.assertIn(long_values["tournament"] + " 續行", ass)
+        self.assertNotIn(long_values["tournament"] + "\n續行", ass)
+        self.assertIn("WrapStyle: 2", ass)
 
     def test_single_source_absolute_and_legacy_basename_resolution(self):
         with tempfile.TemporaryDirectory() as folder:
