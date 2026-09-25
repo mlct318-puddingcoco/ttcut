@@ -14,6 +14,24 @@ assert.match(html, /\.stream\{height:clamp\(260px,36vh,330px\);flex:0 0 clamp\(2
   'event viewport is independently scrollable and tall enough for review');
 assert.match(html, /\.rail\{[\s\S]*overflow-y:auto/,
   'narrow-height layouts can scroll to the sections below the event viewport');
+assert.match(html, /id="appShell"/);
+assert.match(html, /id="reviewHud"[\s\S]*id="reviewHudGame"[\s\S]*id="reviewHudGames"[\s\S]*id="reviewHudPointA"[\s\S]*id="reviewHudPointB"[\s\S]*id="reviewHudServer"[\s\S]*id="reviewHudCandidate"/,
+  'Review HUD exposes game, games, points, authoritative server, and candidate progress');
+assert.match(html, /const serverName = \(cur, nm=names\(\)\) => nm\[cur\.server\]/,
+  'server display is a label helper over the authoritative fold field, not a second rotation algorithm');
+assert.match(html, /\$\('reviewHudServer'\)\.textContent = `🏓 應發球：\$\{serverName\(cur, nm\)\}`/);
+assert.match(html, /\$\('expServer'\)\.textContent = serverName\(cur, nm\)/,
+  'normal editor and Review HUD use the same server label helper');
+assert.match(html, /id="eventPanel"[\s\S]*id="eventLatest"[\s\S]*id="stream"[^>]*tabindex="0"/,
+  'the shared event list is an independently focusable Review panel');
+assert.match(html, /\.review-workspace\{[\s\S]*grid-template-areas:"hud hud" "stage review" "events review"/,
+  'Review uses a dedicated HUD/video+events/review-controls grid');
+assert.match(html, /\.review-workspace>\.rail>\.board,[\s\S]*\.review-workspace>\.rail>\.render\{display:none\}/,
+  'unrelated normal-editor sections are hidden by the reversible workspace class');
+assert.match(html, /\.review-workspace>\.stage \.legend,\.review-workspace>\.stage>\.sources\{display:none\}/);
+assert.match(html, /\.review-workspace \.roilayer\{display:none !important\}/,
+  'source controls and the ROI editing overlay do not clutter active Review');
+assert.match(html, /EVENT_BOTTOM_THRESHOLD = 48/);
 assert.match(html, /\.ev\.selected-point\{[\s\S]*box-shadow:inset 3px 0 var\(--ball\)/);
 assert.match(html, /id="scoreboardStyle"[^>]*>[\s\S]*?<option value="koko" selected>/);
 assert.match(html, /<option value="ttcut">ttcut 原版<\/option>/);
@@ -24,6 +42,16 @@ for (const id of ['newMatch', 'saveAs', 'introEnabled', 'thumbnail', 'exit'])
 for (const id of ['openTournament', 'tournamentPanel', 'tournamentPick', 'thMatchList',
   'thTournament', 'thTitle', 'thProtagonist', 'thSchool', 'thSaveAs', 'thRender'])
   assert.match(html, new RegExp(`id="${id}"`));
+for (const id of ['reviewStart', 'reviewPanel', 'reviewExit', 'reviewCount', 'reviewTime',
+  'reviewConfidence', 'reviewStatus', 'reviewScore', 'reviewProgress', 'reviewPrev',
+  'reviewNext', 'reviewConfirm', 'reviewSkip', 'reviewRestore', 'reviewPlay',
+  'reviewAutoPlay', 'reviewAutoAdvance', 'reviewManualStatus', 'reviewNotice'])
+  assert.match(html, new RegExp(`id="${id}"`));
+assert.match(html, /id="reviewAutoPlay" checked/);
+assert.match(html, /id="reviewAutoAdvance" checked/);
+assert.match(html, /<kbd>Enter<\/kbd>確認候選發球/);
+assert.match(html, /<kbd>S<\/kbd>手動補標發球/);
+assert.match(html, /<kbd>\[ \]<\/kbd>候選/);
 assert.match(html, /建立賽事精彩集錦…/);
 assert.match(html, /掃描 <strong id="thMatches">0<\/strong> 場比賽/);
 for (const [id, label] of Object.entries({introTournament:'賽事名稱', introCategory:'組別',
@@ -56,18 +84,31 @@ assert.doesNotMatch(html, /(^|\n)\s*input:-webkit-autofill/,
 let script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 // Expose the real UI state to this isolated DOM check; skip its async startup.
 script = script.split('  /* ───────────────────────── 起始：')[0] +
-  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,sources,eventScroll:pendingEventScroll,selectedPointIndex:selectedPointIndex()}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget };\n})();';
+  'globalThis.testUI = { setVideo: v => video = v, setCandidates: c => { resetReviewProgress(); rallyCandidates = c; paintRallies(); }, setEvents: e => { selectedPointEvent = null; events = normalizeEvents(e); reconcileReviewState(); }, events: () => events, setSource: (p,o) => {srcPath=p;srcName="old.mp4";outPath=o;}, setRoi: r => roi=r, setTournament: s => tournamentScan=s, tournament: () => tournamentScan, paintTournament, thReview, thSelectedCount, state: () => ({srcPath,outPath,customOutput,roi,rallyCandidates,rallyDiagnostics,video,activeSegment,pendingSeek,pendingPlay,sources,eventScroll:pendingEventScroll,eventAutoFollow,workspaceActive:$("appShell").classList.contains("review-workspace"),selectedPointIndex:selectedPointIndex(),reviewActive,reviewIndex,reviewStates:rallyCandidates.map((_,i)=>reviewStateAt(i)),reviewProgress:reviewProgress(),manualReviewInProgress:manualReviewInProgress(),manualReviewNotice:manualReview.notice}), clearMatch, docPayload, optPayload, loadIntro, introFilename, safeFilenamePart, setSources, sourceForTime, seekGlobal, now, tick, normalizeEvents, completedPointIndexes, toggleHighlightAt, toggleLatestHighlight, toggleSelectedOrLatestHighlight, selectPointAt, clearSelectedPoint, undo, paint, handleKeydown, isEditableTarget, enterReviewMode, exitReviewMode, selectReviewCandidate, moveReviewCandidate, reviewConfirmServe, reviewManualServe, reviewScore, reviewSkip, reviewRestore, reviewStartTime, findNextUnreviewedCandidateAfter, reconcileReviewState, eventNearBottom, returnToLatestEvent };\n})();';
 
 const nodes = new Map();
 function node(id) {
-  if (!nodes.has(id)) nodes.set(id, {
+  if (!nodes.has(id)) {
+    const classes = new Set();
+    nodes.set(id, {
     id, value: id === 'fps' ? '30' : '', innerHTML: '', textContent: '',
-    scrollTop: 0, scrollHeight: 900,
+    checked: id === 'reviewAutoPlay' || id === 'reviewAutoAdvance',
+    hidden: false, scrollTop: 0, scrollHeight: 900, clientHeight: 300,
     listeners: {}, style: {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
     querySelectorAll() { return []; },
-    classList: {add() {}, remove() {}, toggle() {}},
+    classList: {
+      add(...names) { names.forEach(name => classes.add(name)); },
+      remove(...names) { names.forEach(name => classes.delete(name)); },
+      toggle(name, force) {
+        const on = force === undefined ? !classes.has(name) : !!force;
+        if (on) classes.add(name); else classes.delete(name);
+        return on;
+      },
+      contains(name) { return classes.has(name); }
+    },
   });
+  }
   return nodes.get(id);
 }
 const document = {
@@ -81,7 +122,8 @@ const context = {document, addEventListener(type, fn) { globalListeners[type] = 
 vm.runInNewContext(script, context);
 
 const video = {currentTime: 0, duration: 300, paused: false,
-  pause() { this.paused = true; }, remove() { this.removed = true; }};
+  pause() { this.paused = true; }, play() { this.paused = false; return Promise.resolve(); },
+  load() { this.loaded = true; }, remove() { this.removed = true; }};
 context.testUI.setVideo(video);
 context.testUI.setSource('/camera/DJI_0005.MP4', '/output/match.mp4');
 context.testUI.setSources({sources:[{path:'/camera/DJI_0005.MP4',duration:300,
@@ -97,6 +139,8 @@ assert.equal(context.testUI.docPayload().scoreboard.style, 'koko');
 node('scoreboardStyle').value = 'ttcut';
 assert.equal(context.testUI.docPayload().scoreboard.style, 'ttcut');
 node('scoreboardStyle').value = 'koko';
+assert.equal(context.testUI.enterReviewMode(), false, 'empty candidate list refuses Review');
+assert.match(node('note').textContent, /沒有候選/);
 const candidate = {start: 151.8, end: 154, duration: 2.2, confidence: .4,
   confidenceTier: 'low', motionMean: 1, motionPeak: 2, sideBalance: 1,
   strongFrames: 2, supportFrames: 3, audioHits: 0};
@@ -135,6 +179,382 @@ node('thMatchList').listeners.click({target:target({'[data-highlight-down]':{dat
 assert.deepEqual(Array.from(context.testUI.thReview().highlight_order.a),['3:4.000','1:2.000'],
   'highlight arrows define within-match render order');
 
+// Synthetic eight-candidate keyboard-only Rally Review scenario.
+const reviewCandidates = [5,12,25,39,52,68,84,101].map((start, index) => ({
+  start, end:start + 3, duration:3, confidence:index === 7 ? .42 : .91,
+  confidenceTier:index === 7 ? 'low' : 'high', motionMean:1, motionPeak:2,
+  sideBalance:1, strongFrames:8, supportFrames:10, audioHits:2
+}));
+context.testUI.setEvents([]);
+context.testUI.setCandidates(reviewCandidates);
+node('nameA').value = '許宸愷'; node('nameB').value = '對手';
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},snaps:[],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(context.testUI.enterReviewMode(), true);
+assert.equal(context.testUI.state().reviewIndex, 0, 'first unreviewed candidate is selected');
+assert.equal(context.testUI.state().workspaceActive, true,
+  'entering Review applies the dedicated workspace class');
+assert.equal(node('reviewPanel').hidden, false, 'Review controls are visible in the workspace');
+assert.equal(video.currentTime, 4.2, 'Review entry seeks to 0.8 second pre-roll');
+assert.equal(video.paused, true, 'Review entry pauses');
+assert.equal(node('reviewCount').textContent, '候選 01 / 8');
+assert.match(node('reviewScore').innerHTML, /第 <b>3<\/b> 局/);
+assert.match(node('reviewScore').innerHTML, /局數 <b>1–1<\/b>/);
+assert.equal(node('reviewHudGame').textContent, '第 3 局');
+assert.equal(node('reviewHudGames').textContent, '局數 1–1');
+assert.equal(node('reviewHudPointA').textContent, 7);
+assert.equal(node('reviewHudPointB').textContent, 5);
+assert.equal(node('expServer').textContent, '許宸愷');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷',
+  'initial Review server uses the player name from cur.server');
+assert.match(node('reviewHudCandidate').textContent, /候選 1 \/ 8/);
+
+node('nameA').value = ''; node('nameB').value = '';
+context.testUI.paint({cur:{a:0,b:0,gA:0,gB:0,gameNo:1,server:1},snaps:[],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('expServer').textContent, 'B');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：B',
+  'empty player names fall back to the A/B labels used by the normal editor');
+node('nameA').value = '許宸愷'; node('nameB').value = '對手';
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},snaps:[],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+
+context.testUI.handleKeydown({key:']',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 1, '] navigates to the next candidate');
+assert.equal(video.currentTime, 11.2);
+const reviewIndexBeforeSeek = context.testUI.state().reviewIndex;
+context.testUI.handleKeydown({key:'ArrowLeft',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, reviewIndexBeforeSeek,
+  'arrow keys keep fine-seek behavior during Review');
+assert.ok(video.currentTime < 11.2 && video.currentTime > 11.1);
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 0, '[ navigates to the previous candidate');
+
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, 1);
+assert.equal(context.testUI.events()[0].type, 'serve');
+assert.equal(context.testUI.events()[0].t, 5);
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷',
+  'an open candidate-linked serve keeps the next-server fold meaning');
+assert.equal(video.paused, false, 'auto-play after Enter defaults on');
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, 1, 'Enter cannot double-add S');
+assert.equal(node('reviewNotice').hidden, false,
+  'Review-only notices stay visible even while the normal render section is hidden');
+
+video.currentTime = 8;
+context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
+assert.deepEqual(context.testUI.events().map(event => event.type), ['serve','point']);
+assert.equal(context.testUI.events()[1].winner, 'A', 'A uses the normal point event');
+assert.equal(context.testUI.state().reviewStates[0], 'completed');
+assert.equal(context.testUI.state().reviewIndex, 1, 'A auto-advances to next unreviewed');
+assert.equal(video.paused, true, 'auto-advanced candidate is paused');
+context.testUI.paint({cur:{a:8,b:5,gA:1,gB:1,gameNo:3,server:1},snaps:[null,
+  {a:8,b:5,gA:1,gB:1,gameNo:3,server:1,won:false}],
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudPointA').textContent, 8, 'HUD updates from authoritative fold after A scores');
+assert.equal(node('expServer').textContent, '對手');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'candidate-linked scoring updates both server indicators from the same fold state');
+assert.match(node('reviewHudCandidate').textContent, /候選 2 \/ 8 · 完成 1/,
+  'HUD candidate progress updates without counting manual rallies');
+const serverScoreSequence = [
+  [0,0,0],[1,0,0],[2,0,1],[3,0,1],[4,0,0],[5,0,0],[6,0,1],
+  [7,0,1],[8,0,0],[9,0,0],[10,0,1],[10,1,1],[10,2,0],[10,3,0],
+  [10,4,1],[10,5,1],[10,6,0],[10,7,0],[10,8,1],[10,9,1],
+  [10,10,0],[11,10,1],[11,11,0]
+];
+for (const [a,b,server] of serverScoreSequence) {
+  context.testUI.paint({cur:{a,b,gA:1,gB:1,gameNo:3,server},
+    snaps:Array(context.testUI.events().length).fill(null),
+    cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+  const expected = server ? '對手' : '許宸愷';
+  assert.equal(node('expServer').textContent, expected,
+    `normal server is correct at ${a}:${b}`);
+  assert.equal(node('reviewHudServer').textContent, `🏓 應發球：${expected}`,
+    `Review server mirrors normal editor at ${a}:${b}`);
+}
+context.testUI.paint({cur:{a:8,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events()[1].highlight, true,
+  'H after auto-advance marks the just-completed rally');
+
+const eventCountBeforeSkip = context.testUI.events().length;
+context.testUI.handleKeydown({key:'X',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, eventCountBeforeSkip, 'X creates no event');
+assert.equal(context.testUI.state().reviewStates[1], 'skipped');
+assert.equal(context.testUI.state().reviewIndex, 2, 'X auto-advances');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:1,skipped:1,unreviewed:6});
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 1, 'previous revisits skipped candidate');
+assert.equal(context.testUI.events().length, eventCountBeforeSkip, 'revisit does not mutate events');
+assert.equal(context.testUI.reviewRestore(), true, 'skipped candidate can be restored');
+assert.equal(context.testUI.state().reviewStates[1], 'unreviewed');
+assert.equal(context.testUI.reviewSkip(), true);
+assert.equal(context.testUI.state().reviewIndex, 2);
+
+context.testUI.reviewConfirmServe();
+const confirmedCount = context.testUI.events().length;
+assert.equal(context.testUI.reviewSkip(), false, 'confirmed S blocks unsafe X');
+assert.equal(context.testUI.events().length, confirmedCount);
+assert.equal(context.testUI.state().reviewStates[2], 'confirmed');
+context.testUI.undo();
+assert.equal(context.testUI.state().reviewStates[2], 'unreviewed',
+  'undoing confirmed S returns candidate to reviewable');
+node('reviewAutoAdvance').checked = false;
+node('reviewAutoPlay').checked = false;
+context.testUI.reviewConfirmServe();
+assert.equal(video.paused, true, 'auto-play preference can be disabled');
+node('reviewAutoPlay').checked = true;
+video.currentTime = 28;
+context.testUI.reviewScore('B');
+assert.equal(context.testUI.state().reviewIndex, 2, 'auto-advance preference can be disabled');
+assert.equal(context.testUI.state().reviewStates[2], 'completed');
+context.testUI.undo();
+assert.equal(context.testUI.state().reviewStates[2], 'confirmed',
+  'undoing the associated point removes the false completed state');
+context.testUI.undo();
+assert.equal(context.testUI.state().reviewStates[2], 'unreviewed');
+context.testUI.reviewConfirmServe();
+video.currentTime = 28;
+context.testUI.reviewScore('B');
+node('reviewAutoAdvance').checked = true;
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, 4, 'completed revisit does not duplicate events');
+context.testUI.selectReviewCandidate(2, false);
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:'3'}}})});
+assert.equal(context.testUI.state().reviewStates[2], 'confirmed',
+  'manual point deletion reconciles completed to confirmed');
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:'2'}}})});
+assert.equal(context.testUI.state().reviewStates[2], 'unreviewed',
+  'manual serve deletion returns the candidate to reviewable');
+
+context.testUI.selectReviewCandidate(7);
+assert.match(node('reviewConfidence').textContent, /⚠ 低信心候選/);
+for (const editable of [{tagName:'INPUT'}, {tagName:'TEXTAREA'}, {tagName:'SELECT'},
+  {tagName:'DIV',isContentEditable:true}]) {
+  const before = context.testUI.events().length, index = context.testUI.state().reviewIndex;
+  context.testUI.handleKeydown({key:'Enter',target:editable,preventDefault(){throw new Error('must not prevent');}});
+  context.testUI.handleKeydown({key:'S',target:editable,preventDefault(){throw new Error('must not prevent');}});
+  context.testUI.handleKeydown({key:'X',target:editable,preventDefault(){throw new Error('must not prevent');}});
+  assert.equal(context.testUI.events().length, before);
+  assert.equal(context.testUI.state().reviewIndex, index);
+}
+context.testUI.exitReviewMode();
+assert.equal(context.testUI.state().workspaceActive, false,
+  'exiting Review removes the workspace class and restores normal layout');
+assert.equal(node('reviewPanel').hidden, true);
+assert.equal(node('eventLatest').hidden, true);
+
+// End-to-end synthetic workload: five regular rallies, two false positives,
+// and one low-confidence real rally, completed without mouse interaction.
+context.testUI.setEvents([]);
+context.testUI.setCandidates(reviewCandidates);
+context.testUI.enterReviewMode();
+const syntheticWinners = new Map([[0,'A'],[2,'B'],[3,'A'],[5,'B'],[6,'A'],[7,'A']]);
+for (let index = 0; index < reviewCandidates.length; index++) {
+  assert.equal(context.testUI.state().reviewIndex, index);
+  if (!syntheticWinners.has(index)) {
+    context.testUI.handleKeydown({key:'X',target:{tagName:'DIV'},preventDefault(){}});
+    continue;
+  }
+  context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+  video.currentTime = reviewCandidates[index].end;
+  context.testUI.handleKeydown({key:syntheticWinners.get(index),target:{tagName:'DIV'},preventDefault(){}});
+}
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:6,skipped:2,unreviewed:0});
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event => ({
+  t:event.t,type:event.type,...(event.winner ? {winner:event.winner} : {})
+})))), reviewCandidates.flatMap((candidate,index) => syntheticWinners.has(index) ? [
+  {t:candidate.start,type:'serve'},
+  {t:candidate.end,type:'point',winner:syntheticWinners.get(index)}
+] : []), 'Review creates the same explicit S/point events as the normal workflow');
+assert.equal(context.testUI.state().reviewStates[7], 'completed',
+  'low confidence remains reviewable and can be completed');
+context.testUI.exitReviewMode();
+
+// A detector miss between a reviewed candidate at 50 and the next candidate at
+// 70 can be tagged as a normal S/A rally without leaving Review Mode.
+const missedCandidates = [50,70].map(start => ({
+  start, end:start + 4, duration:4, confidence:.92, confidenceTier:'high',
+  motionMean:1, motionPeak:2, sideBalance:1, strongFrames:8, supportFrames:10, audioHits:2
+}));
+context.testUI.setEvents([]);
+context.testUI.setCandidates(missedCandidates);
+node('reviewAutoAdvance').checked = true;
+assert.equal(context.testUI.enterReviewMode(), true);
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+video.currentTime = 54;
+context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.state().reviewIndex, 1, 'candidate at 50 advances to candidate at 70');
+context.testUI.handleKeydown({key:'[',target:{tagName:'DIV'},preventDefault(){}});
+video.currentTime = 60;
+context.testUI.handleKeydown({key:'S',target:{tagName:'DIV'},preventDefault(){}});
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event => [event.t,event.type]))),
+  [[50,'serve'],[54,'point'],[60,'serve']],
+  'Review S adds a normal serve at the current playhead instead of the candidate start');
+context.testUI.paint({cur:{a:1,b:0,gA:0,gB:0,gameNo:1,server:0},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('expServer').textContent, '許宸愷');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷',
+  'manual S without a point preserves the authoritative next-server meaning');
+assert.deepEqual(Array.from(context.testUI.state().reviewStates), ['completed','unreviewed'],
+  'manual S does not attach to or mutate the selected candidate');
+assert.equal(context.testUI.state().manualReviewInProgress, true);
+assert.match(node('reviewManualStatus').textContent, /等待 A\/B 得分/);
+const manualOpenCount = context.testUI.events().length;
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+context.testUI.handleKeydown({key:'X',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, manualOpenCount,
+  'Enter and X are guarded while a manual rally is open');
+assert.deepEqual(Array.from(context.testUI.state().reviewStates), ['completed','unreviewed']);
+video.currentTime = 64;
+context.testUI.handleKeydown({key:'B',target:{tagName:'DIV'},preventDefault(){}});
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event =>
+  [event.t,event.type,event.winner || null]))),
+  [[50,'serve',null],[54,'point','A'],[60,'serve',null],[64,'point','B']],
+  'manual S/B uses ordinary authoritative events');
+context.testUI.paint({cur:{a:1,b:1,gA:0,gB:0,gameNo:1,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('expServer').textContent, '對手');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'manual missed-rally score updates both server indicators from the same fold state');
+assert.equal(context.testUI.state().reviewIndex, 1,
+  'manual score advances strictly forward to the first unreviewed candidate');
+assert.equal(video.currentTime, 69.2, 'manual auto-advance uses normal candidate pre-roll');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:1,skipped:0,unreviewed:1},
+  'manual rallies do not change candidate progress totals');
+context.testUI.handleKeydown({key:'H',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events()[3].highlight, true,
+  'H after manual auto-advance marks the just-completed manual rally');
+context.testUI.undo();
+assert.equal(context.testUI.state().manualReviewInProgress, true,
+  'undoing the manual point restores manual-S-in-progress state');
+assert.deepEqual(Array.from(context.testUI.state().reviewStates), ['completed','unreviewed']);
+context.testUI.undo();
+assert.equal(context.testUI.state().manualReviewInProgress, false,
+  'undoing the manual serve clears manual state');
+assert.deepEqual(Array.from(context.testUI.state().reviewStates), ['completed','unreviewed']);
+context.testUI.exitReviewMode();
+
+// Auto-advance off leaves the playhead and selected candidate in place.
+context.testUI.setEvents([]);
+context.testUI.setCandidates(missedCandidates);
+node('reviewAutoAdvance').checked = false;
+context.testUI.enterReviewMode();
+video.currentTime = 60;
+context.testUI.reviewManualServe();
+video.currentTime = 64;
+context.testUI.reviewScore('A');
+assert.equal(context.testUI.state().reviewActive, true);
+assert.equal(context.testUI.state().reviewIndex, 0);
+assert.deepEqual(Array.from(context.testUI.state().reviewStates), ['unreviewed','unreviewed']);
+assert.equal(context.testUI.state().manualReviewInProgress, false);
+context.testUI.exitReviewMode();
+
+// With no later candidate, Review stays open and explains why it did not move.
+context.testUI.setEvents([]);
+context.testUI.setCandidates([missedCandidates[0]]);
+node('reviewAutoAdvance').checked = true;
+context.testUI.enterReviewMode();
+video.currentTime = 60;
+context.testUI.reviewManualServe();
+video.currentTime = 64;
+context.testUI.reviewScore('B');
+assert.equal(context.testUI.state().reviewActive, true);
+assert.equal(context.testUI.state().reviewIndex, 0);
+assert.match(context.testUI.state().manualReviewNotice, /後續沒有未審候選/);
+assert.match(node('reviewManualStatus').textContent, /後續沒有未審候選/);
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:'1'}}})});
+assert.equal(context.testUI.state().manualReviewInProgress, true,
+  'deleting a manual point restores the tracked manual serve');
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:'0'}}})});
+assert.equal(context.testUI.state().manualReviewInProgress, false,
+  'deleting the manual serve clears manual state');
+assert.equal(context.testUI.state().reviewStates[0], 'unreviewed');
+context.testUI.exitReviewMode();
+
+// Backfilling remains possible when later, already-scored events exist in the
+// timeline; the new point is inserted at its real chronological time.
+context.testUI.setEvents([
+  {t:50,type:'serve'}, {t:54,type:'point',winner:'A'},
+  {t:70,type:'serve'}, {t:74,type:'point',winner:'B'}
+]);
+context.testUI.setCandidates([{...missedCandidates[0],start:80,end:84}]);
+context.testUI.enterReviewMode();
+video.currentTime = 60;
+context.testUI.reviewManualServe();
+assert.equal(context.testUI.state().manualReviewInProgress, true);
+video.currentTime = 64;
+context.testUI.reviewScore('A');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event => event.t))),
+  [50,54,60,64,70,74], 'manual backfill preserves chronological event order');
+assert.equal(context.testUI.state().reviewStates[0], 'unreviewed');
+context.testUI.exitReviewMode();
+
+// N keeps its normal event meaning and closes the transient manual-review state.
+context.testUI.setEvents([]);
+context.testUI.setCandidates([missedCandidates[0]]);
+context.testUI.enterReviewMode();
+video.currentTime = 60;
+context.testUI.reviewManualServe();
+video.currentTime = 61;
+context.testUI.handleKeydown({key:'N',target:{tagName:'DIV'},preventDefault(){}});
+assert.deepEqual(context.testUI.events().map(event => event.type), ['serve','game']);
+assert.equal(context.testUI.state().manualReviewInProgress, false);
+assert.equal(context.testUI.state().reviewStates[0], 'unreviewed');
+context.testUI.exitReviewMode();
+
+// Pre-roll uses the existing virtual timeline and clamps at a source boundary.
+context.testUI.setSources({sources:[
+  {path:'/camera/a.mp4',duration:10,offset:0,end:10},
+  {path:'/camera/b.mp4',duration:10,offset:10,end:20}
+],geometryMismatch:false});
+context.testUI.setVideo(video);
+context.testUI.setCandidates([
+  {...reviewCandidates[0],start:9.7,end:9.9},
+  {...reviewCandidates[1],start:10.3,end:13.3}
+]);
+context.testUI.enterReviewMode();
+context.testUI.moveReviewCandidate(1);
+assert.equal(context.testUI.state().activeSegment, 1);
+assert.equal(context.testUI.state().pendingSeek, 0,
+  'cross-file Review pre-roll clamps to the second segment boundary');
+assert.equal(context.testUI.state().pendingPlay, false);
+context.testUI.exitReviewMode();
+
+// Manual S uses the current global clock in the second source and returns to a
+// later candidate through the same global-to-segment pre-roll path.
+context.testUI.setEvents([]);
+context.testUI.setCandidates([{...reviewCandidates[0],start:15,end:18}]);
+context.testUI.enterReviewMode();
+context.testUI.seekGlobal(11);
+context.testUI.reviewManualServe();
+context.testUI.seekGlobal(12);
+context.testUI.reviewScore('A');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.events().map(event => event.t))), [11,12]);
+assert.equal(context.testUI.state().activeSegment, 1);
+assert.ok(Math.abs(context.testUI.state().pendingSeek - 4.2) < 1e-9,
+  'cross-file manual auto-advance seeks to the later candidate pre-roll');
+assert.equal(context.testUI.state().reviewStates[0], 'unreviewed');
+context.testUI.exitReviewMode();
+
+// Restore the original single-source fixture for normal-editor regression checks.
+context.testUI.setSources({sources:[{path:'/camera/DJI_0005.MP4',duration:300,
+  offset:0,end:300,w:1920,h:1080,codec:'h264',fps_frac:'30/1',audio:{codec_name:'aac'}}],
+  geometryMismatch:false});
+context.testUI.setVideo(video);
+video.currentTime = 0; video.paused = false;
+context.testUI.setEvents([]);
+context.testUI.setCandidates([candidate]);
+
 clickRally({'[data-rally]': row});
 assert.equal(video.currentTime, candidate.start);
 assert.equal(node('tc').textContent, '02:31.80');
@@ -170,6 +590,25 @@ clickRally({'[data-rally]': row, '[data-rally-serve]': {dataset: {rallyServe: '0
 assert.equal(context.testUI.events().length, 1, 'explicit confirmation adds S');
 assert.equal(context.testUI.events()[0].type, 'serve');
 assert.equal(video.currentTime, 0, 'confirmation does not seek');
+video.currentTime = 154;
+context.testUI.handleKeydown({key:'A',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.enterReviewMode(), true);
+assert.equal(context.testUI.state().reviewStates[0], 'completed',
+  'normal candidate confirm plus normal A reconciles as completed in Review');
+const normalCompletedEvents = context.testUI.events().length;
+context.testUI.handleKeydown({key:'Enter',target:{tagName:'DIV'},preventDefault(){}});
+assert.equal(context.testUI.events().length, normalCompletedEvents,
+  'Review cannot duplicate an already completed normal-workflow candidate');
+context.testUI.exitReviewMode();
+context.testUI.setEvents([]);
+clickRally({'[data-rally]': row});
+context.testUI.handleKeydown({key:'S',target:{tagName:'DIV'},preventDefault(){}});
+video.currentTime = 154;
+context.testUI.handleKeydown({key:'B',target:{tagName:'DIV'},preventDefault(){}});
+context.testUI.enterReviewMode();
+assert.equal(context.testUI.state().reviewStates[0], 'completed',
+  'selected normal preview S/B events reconcile to the candidate');
+context.testUI.exitReviewMode();
 
 context.testUI.setEvents([{t: 88.25, type: 'serve'}]);
 node('stream').listeners.click({target: target({'.ev': {dataset: {i: '0'}}})});
@@ -360,6 +799,97 @@ assert.equal(node('stream').scrollTop, 173, 'star toggle preserves scrollTop aft
 assert.equal(node('highlightCount').textContent, 1);
 assert.match(node('stream').innerHTML, /highlight-badge">★ 精彩球/);
 
+// Long Review workspace scenario: browse history without being yanked to the
+// bottom, preserve historical edits, then return to live follow for a missed rally.
+const longEvents = Array.from({length:11}, (_, index) => [
+  {t:10 + index * 18,type:'serve'},
+  {t:14 + index * 18,type:'point',winner:index % 2 ? 'B' : 'A'}
+]).flat();
+const longCandidate = {...reviewCandidates[0],start:250,end:254};
+context.testUI.setEvents(longEvents);
+context.testUI.setCandidates([longCandidate]);
+node('stream').scrollHeight = 1600; node('stream').clientHeight = 300;
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(longEvents.length).fill(null),cuts:{n:0,seconds:0,outSeconds:0,pct:0},
+  ok:true,stats:null});
+context.testUI.enterReviewMode();
+assert.equal(node('stream').scrollTop, 1600, 'Review opens with the newest event visible');
+node('stream').scrollTop = 420;
+node('stream').listeners.scroll();
+assert.equal(context.testUI.state().eventAutoFollow, false,
+  'scrolling well above the bottom pauses event auto-follow');
+assert.equal(node('eventLatest').hidden, false, 'return-to-latest affordance appears');
+context.testUI.toggleHighlightAt(1);
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(longEvents.length).fill(null),cuts:{n:0,seconds:0,outSeconds:0,pct:0},
+  ok:true,stats:null}, context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 420,
+  'historical Highlight edit preserves a long event list scroll position');
+node('stream').listeners.click({target:target({'.ev':{dataset:{i:'3'}}})});
+assert.equal(video.currentTime, longEvents[3].t, 'historical row click still seeks in Review workspace');
+node('eventLatest').listeners.click();
+assert.equal(context.testUI.state().eventAutoFollow, true);
+assert.equal(node('stream').scrollTop, 1600);
+assert.equal(node('eventLatest').hidden, true);
+
+video.currentTime = 220;
+assert.equal(context.testUI.reviewManualServe(), true);
+video.currentTime = 224;
+assert.equal(context.testUI.reviewScore('A'), true);
+node('stream').scrollHeight = 1750;
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null},
+  context.testUI.state().eventScroll);
+assert.equal(node('stream').scrollTop, 1750,
+  'manual S/A follows the newest event once live follow is re-enabled');
+assert.equal(node('reviewHudPointA').textContent, 7,
+  'manual rally score is reflected by the authoritative HUD fold');
+assert.equal(node('reviewHudServer').textContent, `🏓 應發球：${node('expServer').textContent}`,
+  'long manual-rally scenario keeps Review and normal server displays identical');
+assert.equal(context.testUI.state().reviewIndex, 0,
+  'manual rally auto-advances to the later unreviewed candidate');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:0,skipped:0,unreviewed:1}, 'manual rally leaves candidate progress unchanged');
+
+context.testUI.handleKeydown({key:'N',target:{tagName:'DIV'},preventDefault(){}});
+context.testUI.paint({cur:{a:0,b:0,gA:2,gB:1,gameNo:4,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudGame').textContent, '第 4 局', 'HUD updates after N/new game');
+assert.equal(node('reviewHudGames').textContent, '局數 2–1');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手');
+context.testUI.undo();
+context.testUI.paint({cur:{a:7,b:5,gA:1,gB:1,gameNo:3,server:0},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudGame').textContent, '第 3 局', 'HUD updates after Undo');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：許宸愷');
+const manualPointIndex = context.testUI.events().length - 1;
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualPointIndex)}}})});
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudPointA').textContent, 6, 'HUD updates after manual event deletion');
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'point deletion repaints the server from the new fold result');
+const manualServeIndex = context.testUI.events().length - 1;
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualServeIndex)}}})});
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'serve deletion mirrors the unchanged authoritative server state');
+context.testUI.handleKeydown({key:'N',target:{tagName:'DIV'},preventDefault(){}});
+const manualGameIndex = context.testUI.events().length - 1;
+node('stream').listeners.click({target:target({'[data-kill]':{dataset:{kill:String(manualGameIndex)}}})});
+context.testUI.paint({cur:{a:6,b:5,gA:1,gB:1,gameNo:3,server:1},
+  snaps:Array(context.testUI.events().length).fill(null),
+  cuts:{n:0,seconds:0,outSeconds:0,pct:0},ok:true,stats:null});
+assert.equal(node('reviewHudServer').textContent, '🏓 應發球：對手',
+  'game deletion restores the server supplied by the recomputed fold');
+context.testUI.exitReviewMode();
+
 // Candidate review, confirmed serve, and normal scoring all clear old selection.
 context.testUI.setEvents([
   {t:10,type:'serve'},{t:14,type:'point',winner:'A'},
@@ -393,6 +923,11 @@ context.testUI.clearMatch();
 assert.equal(context.testUI.events().length, 0, 'new match clears highlights with events');
 assert.equal(context.testUI.events().some(e => e.highlight), false);
 assert.equal(context.testUI.state().selectedPointIndex, -1, 'new match clears UI selection');
+assert.equal(context.testUI.state().reviewActive, false, 'new match exits Review Mode');
+assert.deepEqual(JSON.parse(JSON.stringify(context.testUI.state().reviewProgress)),
+  {completed:0,skipped:0,unreviewed:0}, 'new match clears Review progress');
+assert.equal(node('reviewAutoPlay').checked, true, 'Review preferences survive new match');
+assert.equal(node('reviewAutoAdvance').checked, true);
 
 node('quality').value = 'max';
 node('scoreboardStyle').value = 'koko';

@@ -8,6 +8,21 @@ FONT_PREFERENCES = ("Xingkai TC", "Kaiti TC", "Songti TC", "PingFang TC")
 SAMPLE_LINES = ("城市盃全國桌球錦標賽", "國小男生二年級團體賽",
                 "許宸愷 VS 曾柏誠", "光復國小    吉林國小")
 INTRO_FIELDS = ("tournament", "category", "playerA", "schoolA", "playerB", "schoolB")
+UNIFORM_INTRO_BASE_SIZE = 128
+UNIFORM_INTRO_MIN_SIZE = 64
+UNIFORM_INTRO_FULL_WIDTH = 1660
+UNIFORM_INTRO_ROW_Y = (270, 430, 635, 795)
+# Retain the normal-match names for callers introduced with v1.4.4.
+NORMAL_INTRO_BASE_SIZE = UNIFORM_INTRO_BASE_SIZE
+NORMAL_INTRO_MIN_SIZE = UNIFORM_INTRO_MIN_SIZE
+NORMAL_INTRO_WIDTHS = {
+    "tournament": UNIFORM_INTRO_FULL_WIDTH,
+    "category": UNIFORM_INTRO_FULL_WIDTH,
+    "playerA": 640,
+    "playerB": 640,
+    "schoolA": 640,
+    "schoolB": 640,
+}
 
 
 def installed_families():
@@ -61,12 +76,29 @@ def _text_units(value):
     return sum(1 if ord(ch) > 0x2e80 else .58 for ch in value)
 
 
-def _size_for(value, base, max_width):
-    return min(base, max(28, int(max_width / max(_text_units(value), 1))))
+def fit_intro_size(value, base=UNIFORM_INTRO_BASE_SIZE,
+                   max_width=UNIFORM_INTRO_FULL_WIDTH,
+                   minimum=UNIFORM_INTRO_MIN_SIZE):
+    """Fit one unwrapped row deterministically, without enlarging short text."""
+    return min(base, max(minimum, int(max_width / max(_text_units(value), 1))))
 
 
-def intro_ass(intro, width, height, duration, font):
-    """Resolution-aware title and independent player columns; legacy lines stay visible."""
+def uniform_intro_sizes(lines, max_width=UNIFORM_INTRO_FULL_WIDTH):
+    """Return equal-base, independently fitted sizes for centered title rows."""
+    return tuple(fit_intro_size(str(line), max_width=max_width) for line in lines)
+
+
+def structured_intro_sizes(intro):
+    """Return the normal-match row sizes at the 1920x1080 design baseline."""
+    return {
+        field: fit_intro_size(str(intro.get(field, "")), NORMAL_INTRO_BASE_SIZE,
+                              max_width, NORMAL_INTRO_MIN_SIZE)
+        for field, max_width in NORMAL_INTRO_WIDTHS.items()
+    }
+
+
+def intro_ass(intro, width, height, duration, font, uniform_lines=False):
+    """Resolution-aware title with structured, uniform, and legacy line layouts."""
     scale = min(width / 1920, height / 1080)
     structured = isinstance(intro, dict) and any(k in intro for k in INTRO_FIELDS)
     lines = intro.get("lines", []) if isinstance(intro, dict) else intro
@@ -87,29 +119,50 @@ Style: Intro,{clean_font},100,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,{bold}
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     rows = []
-    def add(line, x, y, size, max_width):
+    def add(line, x, y, size, max_width, minimum=28):
         safe = re.sub(r"[{}\\\r\n]", " ", str(line)).strip()
         if not safe:
             return
-        size = max(16, round(_size_for(safe, size, max_width) * scale))
+        size = max(16, round(fit_intro_size(safe, size, max_width, minimum) * scale))
         outline = max(4, round(8 * scale))
         rows.append(f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Intro,,0,0,0,,"
                     f"{{\\an5\\pos({round(x*width/1920)},{round(y*height/1080)})"
                     f"\\fs{size}\\bord{outline}\\shad0}}{safe}")
     if structured:
-        add(intro.get("tournament", ""), 960, 285, 136, 1660)
-        add(intro.get("category", ""), 960, 430, 106, 1660)
-        add(intro.get("playerA", ""), 550, 635, 136, 640)
+        sizes = structured_intro_sizes(intro)
+        # Four equal visual levels. Only the individual field that exceeds its
+        # width box shrinks; the ASS script stays explicitly unwrapped.
+        add(intro.get("tournament", ""), 960, UNIFORM_INTRO_ROW_Y[0],
+            sizes["tournament"], UNIFORM_INTRO_FULL_WIDTH,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("category", ""), 960, UNIFORM_INTRO_ROW_Y[1],
+            sizes["category"], UNIFORM_INTRO_FULL_WIDTH,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("playerA", ""), 550, 635, sizes["playerA"], 640,
+            NORMAL_INTRO_MIN_SIZE)
         add("VS" if intro.get("playerA") or intro.get("playerB") else "",
             960, 635, 100, 190)
-        add(intro.get("playerB", ""), 1370, 635, 136, 640)
-        add(intro.get("schoolA", ""), 550, 775, 92, 640)
-        add(intro.get("schoolB", ""), 1370, 775, 92, 640)
+        add(intro.get("playerB", ""), 1370, 635, sizes["playerB"], 640,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("schoolA", ""), 550, UNIFORM_INTRO_ROW_Y[3],
+            sizes["schoolA"], 640,
+            NORMAL_INTRO_MIN_SIZE)
+        add(intro.get("schoolB", ""), 1370, UNIFORM_INTRO_ROW_Y[3],
+            sizes["schoolB"], 640,
+            NORMAL_INTRO_MIN_SIZE)
+    elif uniform_lines:
+        # Tournament Highlight rows share the same base, fit, floor, and vertical
+        # rhythm as the normal-match title while retaining their existing content.
+        values = list(lines)[:4]
+        sizes = uniform_intro_sizes(values)
+        for line, y, size in zip(values, UNIFORM_INTRO_ROW_Y, sizes):
+            add(line, 960, y, size, UNIFORM_INTRO_FULL_WIDTH,
+                UNIFORM_INTRO_MIN_SIZE)
     else:
         # v1 could contain arbitrary freeform matchup/school lines. Never discard them.
         for line, y, size in zip(list(lines)[:4], (285, 430, 635, 775),
                                  (136, 106, 136, 92)):
-            add(line, 960, y, size, 1660)
+            add(line, 960, y, size, UNIFORM_INTRO_FULL_WIDTH)
     return header + "\n".join(rows) + "\n"
 
 

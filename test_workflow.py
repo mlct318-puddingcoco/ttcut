@@ -7,8 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from intro_card import (SAMPLE_LINES, intro_ass, intro_has_text, intro_duration, select_font,
-                        thumbnail_command, thumbnail_path, with_intro_filter)
+from intro_card import (NORMAL_INTRO_BASE_SIZE, NORMAL_INTRO_MIN_SIZE, SAMPLE_LINES,
+                        intro_ass, intro_has_text, intro_duration, select_font,
+                        structured_intro_sizes, thumbnail_command, thumbnail_path,
+                        with_intro_filter)
 from ttcut_v2_3 import (Handler, STATE, STATE_LOCK, QUALITY, build_render,
                         default_out, filter_script, intro_filename,
                         is_preview_disconnect, plan, run_job_managed,
@@ -48,29 +50,99 @@ class IntroTests(unittest.TestCase):
     def test_intro_scales_and_escapes_text(self):
         small = intro_ass(SAMPLE_INTRO, 1920, 1080, 3, "Xingkai TC")
         large = intro_ass(SAMPLE_INTRO, 3840, 2160, 3, "Xingkai TC")
-        self.assertIn(r"\pos(960,285)\fs136\bord8", small)
-        self.assertIn(r"\pos(1920,570)\fs272\bord16", large)
-        self.assertIn(r"\pos(550,635)\fs136", small)
-        self.assertIn(r"\pos(550,775)\fs92", small)
-        self.assertIn(r"\pos(1370,635)\fs136", small)
-        self.assertIn(r"\pos(1370,775)\fs92", small)
+        self.assertIn(r"\pos(960,270)\fs128\bord8", small)
+        self.assertIn(r"\pos(1920,540)\fs256\bord16", large)
+        self.assertIn(r"\pos(550,635)\fs128", small)
+        self.assertIn(r"\pos(550,795)\fs128", small)
+        self.assertIn(r"\pos(1370,635)\fs128", small)
+        self.assertIn(r"\pos(1370,795)\fs128", small)
         self.assertIn(r"\pos(960,635)\fs100", small)
         self.assertEqual(small.count("Dialogue:"), 7)
         thumb = intro_ass(SAMPLE_INTRO, 1280, 720, 3, "Xingkai TC")
-        self.assertIn(r"\pos(367,423)\fs91", thumb)
-        self.assertIn(r"\pos(913,423)\fs91", thumb)
-        self.assertIn(r"\pos(367,517)\fs61", thumb)
-        self.assertIn(r"\pos(913,517)\fs61", thumb)
+        self.assertIn(r"\pos(367,423)\fs85", thumb)
+        self.assertIn(r"\pos(913,423)\fs85", thumb)
+        self.assertIn(r"\pos(367,530)\fs85", thumb)
+        self.assertIn(r"\pos(913,530)\fs85", thumb)
         self.assertIn("0:00:03.00", small)
+        self.assertIn("WrapStyle: 2", small)
+        self.assertIn("Xingkai TC", small)
+        self.assertIn(r"\bord8\shad0", small)
         self.assertNotIn("{bad}", intro_ass(["{bad}"], 1920, 1080, 3, "Xingkai TC"))
 
-    def test_long_player_shrinks_independently_and_legacy_is_retained(self):
+    def test_short_structured_rows_share_one_base_size(self):
+        example = {"tournament": "乒乒乓乓桌球旗艦館",
+                   "category": "950分超級初心者獎金賽",
+                   "playerA": "許宸愷", "playerB": "呂中樵",
+                   "schoolA": "852", "schoolB": "944"}
+        sizes = structured_intro_sizes(example)
+        self.assertEqual(set(sizes.values()), {NORMAL_INTRO_BASE_SIZE})
+        ass = intro_ass(example, 1920, 1080, 3, "Xingkai TC")
+        self.assertEqual(ass.count(r"\fs128"), 6)
+
+    def test_long_headers_shrink_independently_and_never_wrap(self):
+        long_tournament = "超級國際城市桌球公開錦標賽年度總決賽特別邀請賽"
+        long_category = "九百五十分超級初心者獎金挑戰賽男子單打年度總決賽"
+        only_tournament = dict(SAMPLE_INTRO, tournament=long_tournament,
+                               category="短組別")
+        tournament_sizes = structured_intro_sizes(only_tournament)
+        self.assertLess(tournament_sizes["tournament"], NORMAL_INTRO_BASE_SIZE)
+        self.assertEqual(tournament_sizes["category"], NORMAL_INTRO_BASE_SIZE)
+        self.assertEqual(tournament_sizes["playerA"], NORMAL_INTRO_BASE_SIZE)
+        self.assertEqual(tournament_sizes["schoolA"], NORMAL_INTRO_BASE_SIZE)
+
+        only_category = dict(SAMPLE_INTRO, tournament="短賽事",
+                             category=long_category)
+        category_sizes = structured_intro_sizes(only_category)
+        self.assertEqual(category_sizes["tournament"], NORMAL_INTRO_BASE_SIZE)
+        self.assertLess(category_sizes["category"], NORMAL_INTRO_BASE_SIZE)
+
+        both = structured_intro_sizes(dict(SAMPLE_INTRO,
+                                            tournament=long_tournament,
+                                            category=long_category))
+        self.assertLess(both["tournament"], NORMAL_INTRO_BASE_SIZE)
+        self.assertLess(both["category"], NORMAL_INTRO_BASE_SIZE)
+        self.assertGreaterEqual(both["tournament"], NORMAL_INTRO_MIN_SIZE)
+        self.assertGreaterEqual(both["category"], NORMAL_INTRO_MIN_SIZE)
+        ass = intro_ass(dict(SAMPLE_INTRO, tournament=long_tournament + "\n續行"),
+                        1920, 1080, 3, "Xingkai TC")
+        self.assertIn(long_tournament + " 續行", ass)
+        self.assertNotIn(long_tournament + "\n續行", ass)
+
+    def test_player_and_fourth_row_shrink_per_side(self):
         intro = dict(SAMPLE_INTRO, playerA="非常非常非常長的選手姓名")
+        sizes = structured_intro_sizes(intro)
+        self.assertLess(sizes["playerA"], NORMAL_INTRO_BASE_SIZE)
+        self.assertEqual(sizes["playerB"], NORMAL_INTRO_BASE_SIZE)
         ass = intro_ass(intro, 1920, 1080, 3, "Xingkai TC")
-        self.assertIn(r"\pos(1370,635)\fs136", ass)
-        self.assertNotIn(r"\pos(550,635)\fs136", ass)
-        self.assertIn(r"\pos(2740,1270)\fs272", intro_ass(
+        self.assertIn(r"\pos(1370,635)\fs128", ass)
+        self.assertNotIn(r"\pos(550,635)\fs128", ass)
+        self.assertIn(r"\pos(2740,1270)\fs256", intro_ass(
             intro, 3840, 2160, 3, "Xingkai TC"))
+
+        schools = dict(SAMPLE_INTRO, schoolA="非常非常非常長的學校或附加資訊")
+        school_sizes = structured_intro_sizes(schools)
+        self.assertLess(school_sizes["schoolA"], NORMAL_INTRO_BASE_SIZE)
+        self.assertEqual(school_sizes["schoolB"], NORMAL_INTRO_BASE_SIZE)
+
+    def test_intro_and_thumbnail_share_calculation_and_legacy_hierarchy_is_retained(self):
+        intro = dict(SAMPLE_INTRO,
+                     tournament="超級國際城市桌球公開錦標賽年度總決賽特別邀請賽")
+        sizes = structured_intro_sizes(intro)
+        full = intro_ass(intro, 1920, 1080, 3, "Xingkai TC")
+        four_k = intro_ass(intro, 3840, 2160, 3, "Xingkai TC")
+        thumb = intro_ass(intro, 1280, 720, 3, "Xingkai TC")
+        self.assertIn(rf"\pos(960,270)\fs{sizes['tournament']}", full)
+        self.assertIn(rf"\pos(1920,540)\fs{sizes['tournament'] * 2}", four_k)
+        self.assertIn(rf"\pos(640,180)\fs{round(sizes['tournament'] * 2 / 3)}", thumb)
+        self.assertIn(r"\pos(550,635)\fs128", full)
+        self.assertIn(r"\pos(367,423)\fs85", thumb)
+
+        legacy = intro_ass({"lines": SAMPLE_LINES}, 1920, 1080, 3, "Xingkai TC")
+        self.assertIn(r"\pos(960,285)\fs136", legacy)
+        self.assertIn(r"\pos(960,430)\fs106", legacy)
+        self.assertIn(r"\pos(960,635)\fs136", legacy)
+        self.assertIn(r"\pos(960,775)\fs92", legacy)
+        self.assertEqual(legacy.count("Dialogue:"), 4)
         self.assertEqual(intro_ass({"lines": SAMPLE_LINES}, 1920, 1080, 3,
                                    "Xingkai TC").count("Dialogue:"), 4)
         self.assertTrue(intro_has_text({"lines": SAMPLE_LINES}))

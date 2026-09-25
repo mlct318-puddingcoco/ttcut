@@ -1451,6 +1451,10 @@ HTML = r"""<meta charset="utf-8">
     text-transform:uppercase;color:var(--ink-dim)}
   .streammeta{display:flex;gap:10px;align-items:center}
   .streammeta .highlights{color:var(--warn)}
+  .event-panel{display:flex;flex-direction:column;flex:0 0 auto;min-height:0;background:var(--panel)}
+  .event-latest{padding:3px 7px;font-size:10.5px;letter-spacing:0;text-transform:none;
+    border-color:var(--ball);color:var(--ball)}
+  .event-latest[hidden]{display:none}
   .stream{height:clamp(260px,36vh,330px);flex:0 0 clamp(260px,36vh,330px);
     overflow-y:auto;min-height:260px}
   .ev{display:grid;grid-template-columns:60px 1fr auto auto 25px 18px;gap:7px;align-items:center;
@@ -1490,12 +1494,17 @@ HTML = r"""<meta charset="utf-8">
   .rallybody{padding:0 14px 10px}
   .rallyctl{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
   .rallyctl button{flex:1;min-width:92px}
+  .rallyctl #reviewStart{flex-basis:100%}
   .rallynote{font-size:10.5px;color:var(--ink-dim);line-height:1.45;margin-top:7px}
   .rallydiag{font-family:var(--mono);font-size:9.5px;color:var(--ink-dim);margin-top:5px}
   .rallylist{max-height:205px;overflow-y:auto;margin:8px -14px -10px}
-  .rallyrow{display:grid;grid-template-columns:36px 1fr auto;gap:7px;align-items:center;
+  .rallyrow{display:grid;grid-template-columns:58px 1fr auto;gap:7px;align-items:center;
     padding:7px 14px;border-top:1px solid rgba(32,72,110,.5);cursor:pointer;font-size:11.5px}
   .rallyrow:hover{background:var(--table-2)}
+  .rallyrow.current{background:rgba(255,122,24,.11);box-shadow:inset 3px 0 var(--ball)}
+  .rallyrow.completed .rallyseek{color:var(--good)}
+  .rallyrow.skipped .rallyseek{color:var(--bad)}
+  .rallyrow .reviewmark{display:inline-block;min-width:20px;font-weight:700}
   .rallyrow.low{border-left:3px solid var(--warn);padding-left:11px}
   .rallyrow .rallyseek{border:0;background:none;color:var(--ink);padding:4px 0;
     font:inherit;font-family:var(--mono);text-align:left;cursor:pointer}
@@ -1507,6 +1516,75 @@ HTML = r"""<meta charset="utf-8">
     border:1px solid var(--warn);border-radius:3px;background:rgba(255,194,77,.14);
     color:var(--warn);font:700 13px var(--body);line-height:1.3}
   .rallyrow [data-rally-serve]{padding:4px 6px}
+
+  .review-panel{border-bottom:1px solid var(--line-soft);padding:13px 14px;
+    background:linear-gradient(180deg,rgba(255,122,24,.08),rgba(8,32,58,.4))}
+  .review-panel[hidden]{display:none}
+  .review-head{display:flex;align-items:center;gap:8px;margin-bottom:9px}
+  .review-head strong{font-family:var(--disp);font-size:17px;letter-spacing:.05em}
+  .review-head button{margin-left:auto}
+  .review-candidate{display:grid;grid-template-columns:1fr auto;gap:4px 10px;
+    padding:9px;border:1px solid var(--line-soft);border-radius:4px;background:var(--table)}
+  .review-candidate .count{font-family:var(--mono);color:var(--ink)}
+  .review-candidate time{font-family:var(--mono);color:var(--ink-dim)}
+  .review-candidate .confidence{grid-column:1/-1;color:var(--ink-dim);font-size:12px}
+  .review-candidate .confidence.low{color:var(--warn);font-weight:700}
+  .review-candidate .status{grid-column:1/-1;color:var(--ink);font-size:12px}
+  .review-score{margin:8px 0;font-size:12px;line-height:1.55;color:var(--ink-dim)}
+  .review-score b{color:var(--ink);font-weight:500}
+  .review-progress{font-family:var(--mono);font-size:11px;color:var(--ink-dim);margin-bottom:8px}
+  .review-status{margin:-2px 0 8px;padding:6px 8px;border-left:2px solid var(--ball);
+    background:rgba(255,122,24,.08);color:var(--ink);font-size:11.5px}
+  .review-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .review-actions .wide{grid-column:1/-1}
+  .review-prefs{display:grid;gap:5px;margin:9px 0;color:var(--ink-dim);font-size:11.5px}
+  .review-prefs label{display:flex;gap:7px;align-items:center}
+  .review-legend{display:flex;gap:5px;flex-wrap:wrap;margin-top:9px;color:var(--ink-dim);font-size:10.5px}
+  .review-legend span{border:1px solid var(--line-soft);padding:2px 5px;border-radius:3px}
+  .review-legend kbd{font-family:var(--mono);color:var(--ink);margin-right:3px}
+
+  .review-hud{display:none}
+  .review-workspace{
+    grid-template-columns:minmax(520px,1fr) clamp(300px,25vw,356px);
+    grid-template-rows:auto minmax(300px,1fr) clamp(260px,31vh,330px);
+    grid-template-areas:"hud hud" "stage review" "events review";
+    height:100vh;overflow:hidden}
+  .review-workspace>header,.review-workspace>.setbar{display:none}
+  .review-workspace>.review-hud{
+    grid-area:hud;display:flex;align-items:center;gap:clamp(12px,2vw,30px);
+    position:sticky;top:0;z-index:8;min-width:0;padding:10px 16px;
+    border-bottom:1px solid var(--line);background:linear-gradient(90deg,#071c32,var(--panel));
+    box-shadow:0 4px 18px rgba(0,0,0,.22)}
+  .review-hud .hud-label{font:700 11px var(--body);letter-spacing:.11em;
+    text-transform:uppercase;color:var(--ball);white-space:nowrap}
+  .review-hud .hud-game,.review-hud .hud-games,.review-hud .hud-server,
+  .review-hud .hud-candidate{
+    color:var(--ink-dim);white-space:nowrap}
+  .review-hud .hud-server{padding:4px 8px;border:1px solid rgba(255,122,24,.55);
+    border-radius:3px;color:var(--ink);background:rgba(255,122,24,.08)}
+  .review-hud .hud-score{display:flex;align-items:baseline;justify-content:center;
+    gap:9px;min-width:0;flex:1;font-variant-numeric:tabular-nums}
+  .review-hud .hud-name{max-width:22ch;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap;color:var(--ink-dim)}
+  .review-hud .hud-point{font:700 clamp(28px,3.1vw,44px)/.85 var(--disp);color:var(--ink)}
+  .review-hud .hud-colon{font:24px var(--disp);color:var(--ball)}
+  .review-workspace>.stage{grid-area:stage;padding:12px 14px 9px;gap:8px}
+  .review-workspace>.stage .screen{min-height:220px}
+  .review-workspace>.stage .legend,.review-workspace>.stage>.sources{display:none}
+  .review-workspace .roilayer{display:none !important}
+  .review-workspace>.rail{display:contents}
+  .review-workspace>.rail>.board,.review-workspace>.rail>.rallybox,
+  .review-workspace>.rail>.cutout,.review-workspace>.rail>.statbox,
+  .review-workspace>.rail>.render{display:none}
+  .review-workspace>.rail>.review-panel{
+    grid-area:review;display:block;min-height:0;overflow-y:auto;padding:14px;
+    border:0;border-left:1px solid var(--line-soft);background:var(--panel)}
+  .review-workspace>.rail>.review-panel[hidden]{display:none}
+  .review-workspace>.rail>.event-panel{
+    grid-area:events;display:flex;flex-direction:column;min-height:0;margin:0 14px 12px;
+    overflow:hidden;border:1px solid var(--line-soft);border-radius:4px;background:var(--panel)}
+  .review-workspace .event-panel .stream{height:auto;min-height:0;flex:1 1 auto}
+  .review-workspace .review-score{display:none}
 
   .cutout{border-top:1px solid var(--line-soft);padding:11px 14px;font-size:12px;
     color:var(--ink-dim);display:flex;flex-direction:column;gap:5px}
@@ -1619,13 +1697,20 @@ HTML = r"""<meta charset="utf-8">
     .shell{grid-template-columns:1fr;grid-template-rows:auto auto auto 1fr;height:auto}
     .rail{border-left:0;border-top:1px solid var(--line-soft)}
     .stage{height:54vh}
+    .review-workspace{display:grid;grid-template-columns:1fr;
+      grid-template-rows:auto minmax(360px,58vh) minmax(260px,330px) auto;
+      grid-template-areas:"hud" "stage" "events" "review";height:auto;min-height:100vh;overflow:visible}
+    .review-workspace>.review-hud{flex-wrap:wrap;gap:7px 14px}
+    .review-hud .hud-score{order:3;flex-basis:100%;justify-content:flex-start}
+    .review-workspace>.stage{height:auto}
+    .review-workspace>.rail>.review-panel{border-left:0;border-top:1px solid var(--line-soft)}
     .th-body{grid-template-columns:1fr;overflow:auto}.th-list,.th-side{overflow:visible}
   }
   @media (max-width:520px){.intro-fields{grid-template-columns:1fr}}
   @media (prefers-reduced-motion:reduce){*{transition:none !important}}
 </style>
 
-<div class="shell">
+<div class="shell" id="appShell">
   <header>
     <div class="brand"><i></i>ttcut<small>__VERSION__</small></div>
     <button class="btn" id="pick">載入影片</button>
@@ -1675,6 +1760,21 @@ HTML = r"""<meta charset="utf-8">
              title="得分數字與名字左側裝飾條共用這個顏色">
       <button class="btn" id="accentReset" title="回到預設橘色">重設</button></div>
   </div>
+
+  <section class="review-hud" id="reviewHud" aria-label="Review 目前比分" aria-live="polite">
+    <strong class="hud-label">Rally Review</strong>
+    <span class="hud-game" id="reviewHudGame">第 — 局</span>
+    <span class="hud-games" id="reviewHudGames">局數 —</span>
+    <div class="hud-score" aria-label="目前記錄比分">
+      <span class="hud-name" id="reviewHudNameA">選手 A</span>
+      <strong class="hud-point" id="reviewHudPointA">0</strong>
+      <span class="hud-colon">:</span>
+      <strong class="hud-point" id="reviewHudPointB">0</strong>
+      <span class="hud-name" id="reviewHudNameB">選手 B</span>
+    </div>
+    <span class="hud-server" id="reviewHudServer">🏓 應發球：—</span>
+    <span class="hud-candidate" id="reviewHudCandidate">候選 — / —</span>
+  </section>
 
   <div class="stage">
     <div class="sources" id="sourceList" hidden></div>
@@ -1738,6 +1838,7 @@ HTML = r"""<meta charset="utf-8">
         <div class="rallyctl">
           <button class="btn" id="selectRoi" disabled>框選 ROI</button>
           <button class="btn hot" id="detectRallies" disabled>分析回合</button>
+          <button class="btn" id="reviewStart">Rally Review Mode</button>
         </div>
         <div class="rallynote" id="rallyNote">先框住這一桌與兩位選手。候選只供預覽；得分仍以 A／B 手動標記為準。</div>
         <div class="rallydiag" id="rallyDiag"></div>
@@ -1745,8 +1846,47 @@ HTML = r"""<meta charset="utf-8">
       </div>
     </details>
 
-    <div class="streamhead"><span>事件</span><span class="streammeta"><span class="highlights">精彩球 <b id="highlightCount">0</b></span><span id="evcount">0</span></span></div>
-    <div class="stream" id="stream"></div>
+    <section class="review-panel" id="reviewPanel" hidden aria-label="Rally Review Mode">
+      <div class="review-head"><strong>Rally Review Mode</strong><button class="btn" id="reviewExit">結束 Review</button></div>
+      <div class="review-candidate">
+        <span class="count" id="reviewCount">候選 — / —</span>
+        <time id="reviewTime">00:00.00</time>
+        <span class="confidence" id="reviewConfidence">—</span>
+        <span class="status" id="reviewStatus">○ 尚未 Review</span>
+      </div>
+      <div class="review-score" id="reviewScore">比分資料準備中…</div>
+      <div class="review-progress" id="reviewProgress">已完成 0 | 跳過 0 | 未審 0</div>
+      <div class="review-status" id="reviewManualStatus" hidden></div>
+      <div class="review-status" id="reviewNotice" hidden role="status"></div>
+      <div class="review-actions">
+        <button class="btn" id="reviewPrev">上一個 [</button>
+        <button class="btn" id="reviewNext">下一個 ]</button>
+        <button class="btn hot wide" id="reviewConfirm">確認發球 Enter</button>
+        <button class="btn" id="reviewSkip">非 Rally / 跳過 X</button>
+        <button class="btn" id="reviewRestore" hidden>恢復未審</button>
+        <button class="btn wide" id="reviewPlay">播放 / 暫停 Space</button>
+      </div>
+      <div class="review-prefs">
+        <label><input type="checkbox" id="reviewAutoPlay" checked> 確認發球後自動播放</label>
+        <label><input type="checkbox" id="reviewAutoAdvance" checked> A/B 得分後自動到下一候選</label>
+      </div>
+      <div class="review-legend">
+        <span><kbd>Enter</kbd>確認候選發球</span><span><kbd>S</kbd>手動補標發球</span>
+        <span><kbd>A/B</kbd>得分</span>
+        <span><kbd>H</kbd>精彩球</span><span><kbd>X</kbd>跳過</span>
+        <span><kbd>[ ]</kbd>候選</span><span><kbd>Space</kbd>播放</span>
+        <span><kbd>← →</kbd>逐格</span><span><kbd>⇧← →</kbd>1 秒</span>
+        <span><kbd>⌥← →</kbd>5 秒</span><span><kbd>N/Z</kbd>換局／復原</span>
+      </div>
+    </section>
+
+    <section class="event-panel" id="eventPanel" aria-label="事件紀錄">
+      <div class="streamhead"><span>事件紀錄</span><span class="streammeta">
+        <button class="btn event-latest" id="eventLatest" type="button" hidden>↓ 回到最新事件</button>
+        <span class="highlights">精彩球 <b id="highlightCount">0</b></span><span id="evcount">0</span>
+      </span></div>
+      <div class="stream" id="stream" tabindex="0" aria-label="事件紀錄，可獨立捲動"></div>
+    </section>
 
     <div class="cutout">
       <div class="row"><span>可剪去區間</span><b id="cutN">0</b></div>
@@ -1879,10 +2019,17 @@ HTML = r"""<meta charset="utf-8">
   let outPath = '', customOutput = false, outputSuggestionSeq = 0;
   let ffmpegOK = false, polling = null;
   let rallyCandidates = [], rallyDiagnostics = null, rallyBusy = false;
+  // Candidates are ephemeral detector results, so Review progress is deliberately
+  // session-local and keyed by the candidate objects plus the exact event objects.
+  let rallyReview = new Map(), reviewActive = false, reviewIndex = -1;
+  let manualReview = {serveEvents:[], pointEvent:null, notice:''};
+  let rallySelectedIndex = -1, latestFoldState = null;
   let roi = null, roiSelecting = false, roiDrag = null;
   let matchSerial = 0;
   let selectedPointEvent = null;
   let pendingEventScroll = {mode:'latest'};
+  const EVENT_BOTTOM_THRESHOLD = 48;
+  let eventAutoFollow = true;
 
   const num = (id, d) => { const v = +$(id).value; return isFinite(v) ? v : d; };
   const fps    = () => Math.max(1, num('fps', 30));
@@ -1892,6 +2039,7 @@ HTML = r"""<meta charset="utf-8">
   const scope  = () => $('scope').value;
   const firstServer = () => +$('firstServer').value;
   const names  = () => [$('nameA').value || 'A', $('nameB').value || 'B'];
+  const serverName = (cur, nm=names()) => nm[cur.server];
   const startGames  = () => [Math.max(0, num('sgA', 0)), Math.max(0, num('sgB', 0))];
   const startPoints = () => [Math.max(0, num('spA', 0)), Math.max(0, num('spB', 0))];
 
@@ -2231,9 +2379,10 @@ HTML = r"""<meta charset="utf-8">
     srcPath = ''; srcName = ''; outPath = ''; customOutput = false;
     sources = []; activeSegment = 0; pendingSeek = null; pendingPlay = false;
     sourceGeometryMismatch = false; separateRois = false; rois = [];
-    outputSuggestionSeq++; events = []; selectedPointEvent = null;
+    outputSuggestionSeq++; events = []; selectedPointEvent = null; latestFoldState = null;
     roi = null; roiSelecting = false; roiDrag = null;
     rallyCandidates = []; rallyDiagnostics = null; rallyBusy = false;
+    resetReviewProgress();
     $('nameA').value = '選手 A'; $('nameB').value = '選手 B';
     $('firstServer').value = '0';
     $('target').value = '11'; $('deuce').value = 'standard'; $('cap').value = '12';
@@ -2328,6 +2477,7 @@ HTML = r"""<meta charset="utf-8">
     rois = Array(sources.length).fill(null);
     activeSegment = 0; pendingSeek = null; pendingPlay = false;
     roi = null; rallyCandidates = []; rallyDiagnostics = null;
+    resetReviewProgress();
     paintSourceList(); paintRoi(); paintRallies();
     if (data.sourceWarning) banner(data.sourceWarning);
   }
@@ -2355,7 +2505,7 @@ HTML = r"""<meta charset="utf-8">
     separateRois = e.target.checked;
     if (separateRois) rois[activeSegment] = roi;
     else roi = rois[activeSegment] || roi;
-    rallyCandidates = []; rallyDiagnostics = null; paintRallies(); updateGo();
+    rallyCandidates = []; rallyDiagnostics = null; resetReviewProgress(); paintRallies(); updateGo();
   });
   async function pickVideos(multi) {
     if (polling) { banner('請等成片完成再更換影片。'); return; }
@@ -2475,7 +2625,7 @@ HTML = r"""<meta charset="utf-8">
     }
     roi = Object.fromEntries(Object.entries(roi).map(([k,v]) => [k, +v.toFixed(6)]));
     if (requireSeparateRois()) rois[activeSegment] = roi;
-    rallyCandidates = []; rallyDiagnostics = null; paintRallies();
+    rallyCandidates = []; rallyDiagnostics = null; resetReviewProgress(); paintRallies();
     setRoiSelecting(false);
   });
 
@@ -2556,20 +2706,30 @@ HTML = r"""<meta charset="utf-8">
       else row.removeAttribute('aria-selected');
     });
   }
-  function add(type, winner) {
-    if (!video) return;
+  function addAt(type, t, winner) {
     clearSelectedPoint();
-    const t = Math.round(now() * fps()) / fps();
-    events.push(winner === undefined ? {t, type} : {t, type, winner});
+    const event = winner === undefined ? {t, type} : {t, type, winner};
+    events.push(event);
     events.sort((a,b) => a.t - b.t);
+    return event;
+  }
+  function add(type, winner, {associateReview=true, onCreate=null}={}) {
+    if (!video) return null;
+    const t = Math.round(now() * fps()) / fps();
+    const event = addAt(type, t, winner);
+    if (associateReview) associateCandidateReviewEvent(event);
+    if (onCreate) onCreate(event);
+    if (type === 'game' && manualReviewInProgress())
+      manualReview = {serveEvents:[], pointEvent:null, notice:''};
     refresh({eventScroll:'latest'});
+    return event;
   }
   function undo() {
     if (!events.length) return;
     clearSelectedPoint();
     let idx = 0;
     for (let i = 1; i < events.length; i++) if (events[i].t >= events[idx].t) idx = i;
-    events.splice(idx, 1); refresh({eventScroll:'latest'});
+    events.splice(idx, 1); reconcileReviewState(); refresh({eventScroll:'latest'});
   }
 
   function completedPointIndexes(list=events) {
@@ -2620,10 +2780,338 @@ HTML = r"""<meta charset="utf-8">
     return toggleLatestHighlight();
   }
 
+  /* ───────────────────────── Rally Review Mode
+     Review state intentionally stays with this in-memory detector result. Event
+     object references make undo/deletion reconciliation exact without changing
+     the persisted match-event schema; a selected normal preview can associate a
+     manual S only while its playhead is still at that candidate start. */
+  function eventNearBottom() {
+    const stream = $('stream');
+    return stream.scrollHeight - stream.clientHeight - stream.scrollTop <= EVENT_BOTTOM_THRESHOLD;
+  }
+  function updateEventFollowButton() {
+    $('eventLatest').hidden = !reviewActive || eventAutoFollow;
+  }
+  function returnToLatestEvent() {
+    const stream = $('stream');
+    stream.scrollTop = stream.scrollHeight;
+    eventAutoFollow = true;
+    updateEventFollowButton();
+  }
+  function syncReviewWorkspace() {
+    $('appShell').classList.toggle('review-workspace', reviewActive);
+    if (!reviewActive) $('reviewNotice').hidden = true;
+    updateEventFollowButton();
+  }
+  function paintReviewHud(cur, nm, progress) {
+    if (!cur) {
+      $('reviewHudGame').textContent = '第 — 局';
+      $('reviewHudGames').textContent = '局數 —';
+      $('reviewHudPointA').textContent = '—'; $('reviewHudPointB').textContent = '—';
+      $('reviewHudServer').textContent = '🏓 應發球：—';
+    } else {
+      $('reviewHudGame').textContent = `第 ${cur.gameNo} 局`;
+      $('reviewHudGames').textContent = `局數 ${cur.gA}–${cur.gB}`;
+      $('reviewHudPointA').textContent = cur.a; $('reviewHudPointB').textContent = cur.b;
+      $('reviewHudServer').textContent = `🏓 應發球：${serverName(cur, nm)}`;
+    }
+    $('reviewHudNameA').textContent = nm[0]; $('reviewHudNameB').textContent = nm[1];
+    $('reviewHudCandidate').textContent = reviewIndex >= 0
+      ? `候選 ${reviewIndex + 1} / ${rallyCandidates.length} · 完成 ${progress.completed} · 跳過 ${progress.skipped} · 未審 ${progress.unreviewed}`
+      : `候選 — / ${rallyCandidates.length}`;
+  }
+  function resetReviewProgress() {
+    rallyReview = new Map(); reviewActive = false; reviewIndex = -1;
+    manualReview = {serveEvents:[], pointEvent:null, notice:''};
+    rallySelectedIndex = -1;
+    $('reviewPanel').hidden = true;
+    eventAutoFollow = true;
+    syncReviewWorkspace();
+  }
+  function manualReviewInProgress() {
+    return manualReview.serveEvents.some(event => events.includes(event)) &&
+      !events.includes(manualReview.pointEvent);
+  }
+  function reviewRecord(candidate, create=true) {
+    if (!candidate) return null;
+    let record = rallyReview.get(candidate);
+    if (!record && create) {
+      record = {skipped:false, serveEvent:null, pointEvent:null};
+      rallyReview.set(candidate, record);
+    }
+    return record || null;
+  }
+  function associateCandidateReviewEvent(event) {
+    if (!event) return;
+    if (event.type === 'serve') {
+      const candidate = rallyCandidates[rallySelectedIndex];
+      if (!candidate || Math.abs(event.t - candidate.start) >= .20 ||
+          reviewStateAt(rallySelectedIndex) !== 'unreviewed') return;
+      const record = reviewRecord(candidate);
+      record.skipped = false; record.serveEvent = event; record.pointEvent = null;
+      return;
+    }
+    if (event.type !== 'point') return;
+    const pointIndex = events.indexOf(event);
+    let best = null, bestIndex = -1;
+    for (const record of rallyReview.values()) {
+      const serveIndex = events.indexOf(record.serveEvent);
+      if (serveIndex < 0 || serveIndex >= pointIndex || record.pointEvent) continue;
+      const blocked = events.slice(serveIndex + 1, pointIndex)
+        .some(item => item.type === 'point' || item.type === 'game');
+      if (!blocked && serveIndex > bestIndex) { best = record; bestIndex = serveIndex; }
+    }
+    if (best) { best.skipped = false; best.pointEvent = event; }
+  }
+  function reconcileReviewState() {
+    const {completed} = completedPointIndexes();
+    for (const [candidate, record] of rallyReview) {
+      let serveIndex = events.indexOf(record.serveEvent);
+      let pointIndex = events.indexOf(record.pointEvent);
+      if (serveIndex < 0) {
+        record.serveEvent = null; record.pointEvent = null;
+        continue;
+      }
+      if (pointIndex < 0 || pointIndex <= serveIndex || !completed.has(pointIndex))
+        record.pointEvent = null;
+      pointIndex = events.indexOf(record.pointEvent);
+      const boundary = events.slice(serveIndex + 1, pointIndex < 0 ? events.length : pointIndex)
+        .find(event => event.type === 'point' || event.type === 'game');
+      if (boundary) { record.serveEvent = null; record.pointEvent = null; }
+      if (record.serveEvent || record.pointEvent) record.skipped = false;
+    }
+    manualReview.serveEvents = manualReview.serveEvents.filter(event => events.includes(event));
+    if (!manualReview.serveEvents.length) {
+      manualReview = {serveEvents:[], pointEvent:null, notice:''};
+      return;
+    }
+    const serveIndex = Math.max(...manualReview.serveEvents.map(event => events.indexOf(event)));
+    let pointIndex = events.indexOf(manualReview.pointEvent);
+    if (pointIndex <= serveIndex || !completed.has(pointIndex)) {
+      manualReview.pointEvent = null;
+      pointIndex = -1;
+    }
+  }
+  function reviewStateAt(index) {
+    const candidate = rallyCandidates[index];
+    const record = reviewRecord(candidate, false);
+    if (!candidate || !record) return 'unreviewed';
+    if (record.skipped) return 'skipped';
+    const pointIndex = events.indexOf(record.pointEvent);
+    if (pointIndex >= 0 && completedPointIndexes().completed.has(pointIndex)) return 'completed';
+    if (events.includes(record.serveEvent)) return 'confirmed';
+    return 'unreviewed';
+  }
+  const reviewStateLabel = state => ({
+    unreviewed:'○ 尚未 Review', confirmed:'● 已確認發球（待得分）',
+    completed:'✓ 已完成', skipped:'× 非 Rally'
+  }[state] || '○ 尚未 Review');
+  function reviewProgress() {
+    let completed = 0, skipped = 0;
+    rallyCandidates.forEach((_, index) => {
+      const state = reviewStateAt(index);
+      if (state === 'completed') completed++;
+      else if (state === 'skipped') skipped++;
+    });
+    return {completed, skipped, unreviewed:rallyCandidates.length - completed - skipped};
+  }
+  function reviewStartTime(candidate) {
+    const target = sourceForTime(candidate.start);
+    const segment = sources[target.index];
+    return Math.max(segment ? segment.offset : 0, candidate.start - .8, 0);
+  }
+  function firstUnreviewedIndex(from=-1) {
+    if (!rallyCandidates.length) return -1;
+    for (let offset = 1; offset <= rallyCandidates.length; offset++) {
+      const index = (from + offset + rallyCandidates.length) % rallyCandidates.length;
+      if (reviewStateAt(index) === 'unreviewed') return index;
+    }
+    return -1;
+  }
+  function findNextUnreviewedCandidateAfter(globalTime) {
+    let best = -1, bestTime = Infinity;
+    rallyCandidates.forEach((candidate, index) => {
+      if (reviewStateAt(index) !== 'unreviewed' || candidate.start <= globalTime + .001) return;
+      if (candidate.start < bestTime) { best = index; bestTime = candidate.start; }
+    });
+    return best;
+  }
+  function paintReview() {
+    $('reviewPanel').hidden = !reviewActive;
+    syncReviewWorkspace();
+    if (!reviewActive) return;
+    reconcileReviewState();
+    const candidate = rallyCandidates[reviewIndex];
+    if (!candidate) { exitReviewMode(); return; }
+    const state = reviewStateAt(reviewIndex), progress = reviewProgress();
+    const manualOpen = manualReviewInProgress();
+    $('reviewCount').textContent = `候選 ${String(reviewIndex + 1).padStart(2,'0')} / ${rallyCandidates.length}`;
+    $('reviewTime').textContent = `全域 ${fmt(candidate.start)}`;
+    const low = candidate.confidenceTier === 'low';
+    $('reviewConfidence').textContent = `${low ? '⚠ 低信心候選' : '高信心候選'} · ${Math.round(candidate.confidence * 100)}%`;
+    $('reviewConfidence').classList.toggle('low', low);
+    $('reviewStatus').textContent = reviewStateLabel(state);
+    const cur = latestFoldState && latestFoldState.cur, nm = names();
+    $('reviewScore').innerHTML = cur
+      ? `第 <b>${cur.gameNo}</b> 局 · <b>${escHtml(nm[0])} ${cur.a}</b>　<b>${escHtml(nm[1])} ${cur.b}</b><br>局數 <b>${cur.gA}–${cur.gB}</b>`
+      : '比分資料準備中…';
+    paintReviewHud(cur, nm, progress);
+    $('reviewProgress').textContent = `已完成 ${progress.completed} | 跳過 ${progress.skipped} | 未審 ${progress.unreviewed}`;
+    const manualStatus = manualOpen ? '手動補標中：等待 A/B 得分' : manualReview.notice;
+    $('reviewManualStatus').hidden = !manualStatus;
+    $('reviewManualStatus').textContent = manualStatus;
+    $('reviewPrev').disabled = reviewIndex <= 0;
+    $('reviewNext').disabled = reviewIndex >= rallyCandidates.length - 1;
+    $('reviewConfirm').disabled = manualOpen || state !== 'unreviewed';
+    $('reviewConfirm').textContent = state === 'confirmed' ? '已確認發球' :
+      state === 'completed' ? '已完成' : state === 'skipped' ? '已跳過' : '確認發球 Enter';
+    $('reviewSkip').disabled = manualOpen || state !== 'unreviewed';
+    $('reviewRestore').hidden = state !== 'skipped';
+  }
+  function selectReviewCandidate(index, seek=true) {
+    if (!reviewActive || index < 0 || index >= rallyCandidates.length) return false;
+    reviewIndex = index; rallySelectedIndex = index; clearSelectedPoint();
+    if (seek && video) {
+      video.pause(); seekGlobal(reviewStartTime(rallyCandidates[index])); tick();
+    }
+    paintRallies(); paintReview();
+    return true;
+  }
+  function enterReviewMode() {
+    if (!rallyCandidates.length) {
+      $('rallyNote').textContent = '目前沒有候選可 Review；請先完成回合分析。';
+      banner('目前沒有候選可進入 Rally Review Mode。');
+      return false;
+    }
+    reviewActive = true;
+    eventAutoFollow = true;
+    returnToLatestEvent();
+    let index = rallySelectedIndex >= 0 && rallySelectedIndex < rallyCandidates.length
+      ? rallySelectedIndex : firstUnreviewedIndex(-1);
+    if (index < 0) index = 0;
+    $('rallyBox').open = true;
+    return selectReviewCandidate(index, true);
+  }
+  function exitReviewMode() {
+    reviewActive = false; reviewIndex = -1; $('reviewPanel').hidden = true;
+    eventAutoFollow = true; syncReviewWorkspace(); paintRallies();
+  }
+  function moveReviewCandidate(delta) {
+    if (!reviewActive) return false;
+    return selectReviewCandidate(Math.max(0, Math.min(rallyCandidates.length - 1,
+      reviewIndex + delta)), true);
+  }
+  function reviewConfirmServe() {
+    if (!reviewActive || !video) return false;
+    reconcileReviewState();
+    if (manualReviewInProgress()) {
+      banner('手動補標回合進行中；請先按 A/B 得分，或按 Z 復原手動 S。');
+      return false;
+    }
+    const candidate = rallyCandidates[reviewIndex], state = reviewStateAt(reviewIndex);
+    if (state === 'confirmed') { banner('這個候選已確認發球，不會重複加入 S。'); return false; }
+    if (state !== 'unreviewed') { banner('這個候選已完成或跳過；請先恢復未審再操作。'); return false; }
+    const record = reviewRecord(candidate);
+    record.skipped = false;
+    const t = Math.round(candidate.start * fps()) / fps();
+    const existing = events.find(event => event.type === 'serve' && Math.abs(event.t - t) < .20);
+    if (existing) { banner('這個候選時間已有 S；請先復原或刪除該事件再重新確認。'); return false; }
+    record.serveEvent = addAt('serve', t); record.pointEvent = null;
+    if ($('reviewAutoPlay').checked) seekGlobal(t, true);
+    else { video.pause(); seekGlobal(t); }
+    refresh({eventScroll:'latest'}); paintReview();
+    return true;
+  }
+  function reviewManualServe() {
+    if (!reviewActive || !video) return false;
+    reconcileReviewState();
+    if (!manualReviewInProgress())
+      manualReview = {serveEvents:[], pointEvent:null, notice:''};
+    const event = add('serve', undefined, {associateReview:false, onCreate: serveEvent => {
+      manualReview.serveEvents.push(serveEvent);
+      manualReview.pointEvent = null; manualReview.notice = '';
+    }});
+    paintReview();
+    return !!event;
+  }
+  function reviewScore(winner) {
+    if (!reviewActive || !video) return false;
+    reconcileReviewState();
+    if (manualReviewInProgress()) {
+      const point = add('point', winner, {associateReview:false, onCreate: pointEvent => {
+        manualReview.pointEvent = pointEvent; manualReview.notice = '';
+      }});
+      if (!point) return false;
+      let next = -1;
+      if ($('reviewAutoAdvance').checked)
+        next = findNextUnreviewedCandidateAfter(point.t);
+      if (next >= 0) selectReviewCandidate(next, true);
+      else {
+        if (video) video.pause();
+        if ($('reviewAutoAdvance').checked) manualReview.notice = '後續沒有未審候選';
+        paintRallies(); paintReview();
+      }
+      return true;
+    }
+    const state = reviewStateAt(reviewIndex);
+    if (state !== 'confirmed') {
+      banner(state === 'completed' ? '這個候選已完成，不會重複計分。' : '請先按 Enter 確認目前候選的發球。');
+      return false;
+    }
+    const record = reviewRecord(rallyCandidates[reviewIndex]);
+    const t = Math.round(now() * fps()) / fps();
+    record.pointEvent = addAt('point', t, winner);
+    let next = -1;
+    if ($('reviewAutoAdvance').checked) next = firstUnreviewedIndex(reviewIndex);
+    if (next >= 0) selectReviewCandidate(next, true);
+    else { if (video) video.pause(); paintRallies(); paintReview(); }
+    refresh({eventScroll:'latest'});
+    return true;
+  }
+  function reviewSkip() {
+    if (!reviewActive) return false;
+    reconcileReviewState();
+    if (manualReviewInProgress()) {
+      banner('手動補標回合進行中；請先按 A/B 得分，或按 Z 復原手動 S。');
+      return false;
+    }
+    const state = reviewStateAt(reviewIndex);
+    if (state === 'confirmed') { banner('已確認發球；請先按 Z 復原 S，才可標記為非 Rally。'); return false; }
+    if (state !== 'unreviewed') return false;
+    reviewRecord(rallyCandidates[reviewIndex]).skipped = true;
+    const next = firstUnreviewedIndex(reviewIndex);
+    if (next >= 0) selectReviewCandidate(next, true);
+    else { if (video) video.pause(); paintRallies(); paintReview(); }
+    return true;
+  }
+  function reviewRestore() {
+    if (!reviewActive || reviewStateAt(reviewIndex) !== 'skipped') return false;
+    reviewRecord(rallyCandidates[reviewIndex]).skipped = false;
+    paintRallies(); paintReview(); return true;
+  }
+
+  $('reviewStart').addEventListener('click', enterReviewMode);
+  $('reviewExit').addEventListener('click', exitReviewMode);
+  $('reviewPrev').addEventListener('click', () => moveReviewCandidate(-1));
+  $('reviewNext').addEventListener('click', () => moveReviewCandidate(1));
+  $('reviewConfirm').addEventListener('click', reviewConfirmServe);
+  $('reviewSkip').addEventListener('click', reviewSkip);
+  $('reviewRestore').addEventListener('click', reviewRestore);
+  $('reviewPlay').addEventListener('click', () => {
+    if (video) video.paused ? video.play().catch(() => {}) : video.pause();
+  });
+  $('eventLatest').addEventListener('click', returnToLatestEvent);
+  $('stream').addEventListener('scroll', () => {
+    if (!reviewActive) return;
+    eventAutoFollow = eventNearBottom();
+    updateEventFollowButton();
+  });
+
   /* ───────────────────────── Rally Detection v0.2.3
      ROI 影像才會產生候選；音訊只佐證接近門檻的視覺片段。
      只有使用者按下「確認發球」才會寫入事件，得分者仍完全手動。 */
   function paintRallies() {
+    reconcileReviewState();
     $('rallyCount').textContent = rallyCandidates.length || '—';
     const d = rallyDiagnostics;
     $('rallyDiag').textContent = d && d.motionThreshold != null
@@ -2634,7 +3122,11 @@ HTML = r"""<meta charset="utf-8">
         `佐證保留 ${d.audioPromotedCandidates || 0} · 前後修剪 ${d.audioTrimmedCandidates || 0} · ` +
         `短走動排除 ${d.rejectedBriefCandidates || 0} · valley 切分 ${d.motionValleySplits || 0}`
       : '';
-    if (!rallyCandidates.length) { $('rallyList').innerHTML = ''; return; }
+    if (!rallyCandidates.length) {
+      $('rallyList').innerHTML = '';
+      if (reviewActive) { reviewActive = false; reviewIndex = -1; $('reviewPanel').hidden = true; }
+      return;
+    }
     const splitReasons = {
       short_candidate: '候選太短', no_sustained_valley: '沒有持續低動作',
       brief_valley: '低動作太短',
@@ -2652,6 +3144,8 @@ HTML = r"""<meta charset="utf-8">
       incomplete_rise_fall: '起落動作不完整'
     };
     $('rallyList').innerHTML = rallyCandidates.map((r, i) => {
+      const reviewState = reviewStateAt(i);
+      const current = reviewActive && reviewIndex === i;
       const used = events.some(e => e.type === 'serve' && Math.abs(e.t - r.start) < .20);
       const valley = r.motionValleyScore == null ? '—' :
         `${r.motionValleyScore}/${r.motionValleyDuration}s`;
@@ -2675,15 +3169,18 @@ HTML = r"""<meta charset="utf-8">
           ` · 切分 ${v.splitConfidence == null ? '—' : Math.round(v.splitConfidence * 100) + '%'}` +
           ` · ${v.decision === 'split' ? '已切' : '未切'}：${splitReasons[v.reason] || v.reason}</small>`).join('') +
         `</details>` : '';
-      return `<div class="rallyrow${r.confidenceTier === 'low' ? ' low' : ''}" data-rally="${i}" title="點一下從候選開頭預覽">
-        <button type="button" class="rallyseek" data-rally-seek="${i}" aria-label="預覽候選 ${i + 1}，從 ${fmt(r.start)} 開始">#${String(i + 1).padStart(2, '0')}</button>
+      const mark = current ? '▶' : reviewState === 'completed' ? '✓' : reviewState === 'skipped' ? '×' : '○';
+      const reviewClass = `${current ? ' current' : ''}${reviewState === 'completed' ? ' completed' : ''}${reviewState === 'skipped' ? ' skipped' : ''}`;
+      return `<div class="rallyrow${r.confidenceTier === 'low' ? ' low' : ''}${reviewClass}" data-rally="${i}" title="點一下從候選開頭預覽">
+        <button type="button" class="rallyseek" data-rally-seek="${i}" aria-label="預覽候選 ${i + 1}，從 ${fmt(r.start)} 開始"><span class="reviewmark">${r.confidenceTier === 'low' ? '⚠' : ''}${mark}</span>#${String(i + 1).padStart(2, '0')}</button>
         <div class="rallyinfo">${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
+          <small>${reviewStateLabel(reviewState)}</small>
           ${r.confidenceTier === 'low' ? `<strong class="confidence">低信心 · ${Math.round(r.confidence * 100)}% · 請人工確認</strong>` : ''}
           <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
           `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
           `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small>` +
           `<small>${split}</small>${shortInfo}${allValleys}</div>
-        <button type="button" class="btn" data-rally-serve="${i}" ${used ? 'disabled' : ''}>${used ? '已加入' : '確認發球'}</button>
+        <button type="button" class="btn" data-rally-serve="${i}" ${used || reviewState === 'skipped' ? 'disabled' : ''}>${reviewState === 'skipped' ? '已跳過' : used ? '已加入' : '確認發球'}</button>
       </div>`;
     }).join('');
   }
@@ -2703,6 +3200,7 @@ HTML = r"""<meta charset="utf-8">
       const d = await r.json();
       if (serial !== matchSerial) return;
       if (!r.ok) throw new Error(d.error || '分析失敗');
+      resetReviewProgress();
       rallyCandidates = d.candidates || []; rallyDiagnostics = d.diagnostics || null;
       paintRallies();
       $('rallyNote').textContent = rallyCandidates.length
@@ -2720,18 +3218,25 @@ HTML = r"""<meta charset="utf-8">
     const use = e.target.closest('[data-rally-serve]');
     const row = e.target.closest('[data-rally]');
     if (!row || !video) return;
-    const candidate = rallyCandidates[+row.dataset.rally];
+    const index = +row.dataset.rally, candidate = rallyCandidates[index];
     if (!candidate) return;
     clearSelectedPoint();
+    if (reviewActive) {
+      selectReviewCandidate(index, !use);
+      if (use) reviewConfirmServe();
+      return;
+    }
     if (use) {
       const t = Math.round(candidate.start * fps()) / fps();
-      events.push({t, type: 'serve'}); events.sort((a,b) => a.t - b.t);
+      const record = reviewRecord(candidate);
+      record.skipped = false; record.serveEvent = addAt('serve', t); record.pointEvent = null;
       paintRallies(); refresh({eventScroll:'latest'});
       return;
     }
     // The whole candidate list lives inside #rallyBox (<details>). Only the
     // nested diagnostic disclosure control should suppress preview seeking.
     if (e.target.closest('.rallyrow summary')) return;
+    rallySelectedIndex = index;
     video.pause(); seekGlobal(candidate.start); tick();
   });
 
@@ -2739,11 +3244,14 @@ HTML = r"""<meta charset="utf-8">
   let seq = 0, timer = null;
   function refresh({eventScroll='latest'}={}) {
     paintRallies();
+    paintReview();
     // Live event creation follows the newest row; historical Highlight edits
     // opt into preserve so the shared rerender cannot move a reviewer's place.
-    pendingEventScroll = eventScroll === 'preserve'
+    // A reviewer who has scrolled away from the bottom also keeps that position
+    // until returning to the live edge explicitly or by scrolling near it.
+    pendingEventScroll = eventScroll === 'preserve' || !eventAutoFollow
       ? {mode:'preserve', top:$('stream').scrollTop}
-      : {mode:'latest'};
+      : {mode:'latest', top:$('stream').scrollTop};
     clearTimeout(timer);
     timer = setTimeout(doRefresh, 50);
   }
@@ -2767,17 +3275,18 @@ HTML = r"""<meta charset="utf-8">
 
   /* ───────────────────────── 畫面 */
   function paint(st, eventScroll={mode:'latest'}) {
+    latestFoldState = st;
     const nm = names(), cur = st.cur;
     $('whoA').textContent = nm[0]; $('whoB').textContent = nm[1];
     $('ptsA').textContent = cur.a;  $('ptsB').textContent = cur.b;
     $('gmA').textContent = cur.gA;  $('gmB').textContent = cur.gB;
     $('gameNo').textContent = cur.gameNo;
     $('ruleNote').textContent = deuce() === 'capped' ? ` · 封頂 ${capVal()}` : '';
-    $('expServer').textContent = nm[cur.server];
+    $('expServer').textContent = serverName(cur, nm);
     $('cardA').classList.toggle('serving', cur.server === 0);
     $('cardB').classList.toggle('serving', cur.server === 1);
 
-    const stream = $('stream');
+    const stream = $('stream'), liveScrollTop = stream.scrollTop;
     $('evcount').textContent = events.length;
     $('highlightCount').textContent = events.filter(e =>
       e.type === 'point' && e.highlight === true).length;
@@ -2812,8 +3321,10 @@ HTML = r"""<meta charset="utf-8">
       });
       stream.innerHTML = html;
       if (eventScroll.mode === 'preserve') stream.scrollTop = eventScroll.top;
-      else stream.scrollTop = stream.scrollHeight;
+      else if (eventAutoFollow) stream.scrollTop = stream.scrollHeight;
+      else stream.scrollTop = liveScrollTop;
     }
+    updateEventFollowButton();
 
     const c = st.cuts || {};
     $('cutN').textContent = c.n || 0;
@@ -2821,6 +3332,7 @@ HTML = r"""<meta charset="utf-8">
     $('outT').textContent = (c.outSeconds || 0).toFixed(1) + 's'
       + (c.pct ? `　壓縮 ${c.pct}%` : '');
     paintStats(st);
+    paintReview();
     updateGo(st.ok);
   }
 
@@ -2884,8 +3396,10 @@ HTML = r"""<meta charset="utf-8">
 
   function banner(msg) {
     const n = $('note');
-    if (!msg) { n.hidden = true; return; }
-    n.hidden = false; n.textContent = msg;
+    const reviewNotice = $('reviewNotice');
+    n.hidden = !msg; reviewNotice.hidden = !msg || !reviewActive;
+    if (!msg) return;
+    n.textContent = msg; reviewNotice.textContent = msg;
   }
 
   $('stream').addEventListener('click', e => {
@@ -2898,6 +3412,7 @@ HTML = r"""<meta charset="utf-8">
     const k = e.target.closest('[data-kill]');
     if (k) {
       clearSelectedPoint(); events.splice(+k.dataset.kill, 1);
+      reconcileReviewState();
       refresh({eventScroll:'latest'}); return;
     }
     const row = e.target.closest('.ev');
@@ -2937,10 +3452,14 @@ HTML = r"""<meta charset="utf-8">
       case ' ':          if (video) video.paused ? video.play() : video.pause(); break;
       case 'ArrowLeft':  seekBy(-step); break;
       case 'ArrowRight': seekBy(step); break;
-      case 's': case 'S': add('serve'); break;
-      case 'a': case 'A': add('point', 'A'); break;
-      case 'b': case 'B': add('point', 'B'); break;
+      case '[':           if (reviewActive) moveReviewCandidate(-1); else return; break;
+      case ']':           if (reviewActive) moveReviewCandidate(1); else return; break;
+      case 'Enter':       if (reviewActive) reviewConfirmServe(); else return; break;
+      case 's': case 'S': reviewActive ? reviewManualServe() : add('serve'); break;
+      case 'a': case 'A': reviewActive ? reviewScore('A') : add('point', 'A'); break;
+      case 'b': case 'B': reviewActive ? reviewScore('B') : add('point', 'B'); break;
       case 'h': case 'H': toggleSelectedOrLatestHighlight(); break;
+      case 'x': case 'X': if (reviewActive) reviewSkip(); else return; break;
       case 'n': case 'N': add('game'); break;
       case 'z': case 'Z': undo(); break;
       case '1': setRate(0.5); break;
@@ -3044,6 +3563,7 @@ HTML = r"""<meta charset="utf-8">
     r.onload = async () => {
       try {
         const d = JSON.parse(r.result);
+        resetReviewProgress();
         if (d.sources && d.sources.length) {
           const loaded = await fetch('/load-sources', {method:'POST',
             headers:{'Content-Type':'application/json'},

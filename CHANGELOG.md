@@ -6,6 +6,91 @@ output-format changes bump the whole number.
 The `_EN` build carries the same version number as the Chinese build it was made
 from; only user-facing text differs.
 
+## Koko v1.4.5 — Uniform Tournament Highlight Typography
+
+- Tournament Highlight Builder intro and thumbnail rows now share the normal
+  match intro's 128 px base size, 64 px floor, and independent single-line fit
+  calculation at the 1920×1080 design baseline.
+- The existing tournament/title/protagonist/school content and order are
+  unchanged. Each centered row receives the full 1660 px safe width and shrinks
+  only when its own text exceeds that width.
+- Builder row centers now use 270/430/635/795, matching the uniform normal-match
+  vertical rhythm. The 4K intro and 1280×720 thumbnail scale the same calculation
+  proportionally.
+- Moving competition-video backgrounds, thumbnail source selection, scoreless
+  intro, direct rally ordering, rally scoreboards, timing, and output behavior
+  are unchanged.
+
+## Koko v1.4.4 — Uniform Normal-Match Intro Typography
+
+- The four primary normal-match intro levels now share a 128 px base size at
+  1080p: tournament, category, player names, and school/rating sublabels.
+- Each tournament/category row and each player/sublabel side shrinks only when
+  its own width box overflows, down to a readable 64 px floor. Rows remain
+  single-line and scale proportionally at 4K and in the 1280x720 thumbnail.
+- Row centers moved minimally from 285/430/635/775 to 270/430/635/795 so the
+  larger category and fourth row retain clear, balanced vertical spacing.
+- Tournament Highlight Builder titles retained their existing 136/106/136/92
+  hierarchy in this revision; v1.4.5 synchronizes them separately.
+
+## Koko v1.4.3 — Review HUD Serve Indicator
+
+- The Review HUD now shows `🏓 應發球：<player>` without increasing its desktop
+  row height. Empty player names use the same A/B fallback as the normal editor.
+- Both the normal editor's **應由 … 發球** label and the Review HUD call the same
+  display helper over `fold_full().cur.server`; no serve-rotation state or logic
+  is duplicated in JavaScript.
+- The indicator therefore follows the existing two-point rotation, one-point
+  deuce rotation, first-server/new-game behavior, scoring, Undo, deletion, JSON
+  reload, candidate confirmation, and manual missed-rally workflow automatically.
+- An open S event does not alter the label: `cur.server` means the player who
+  should serve the next point, exactly as it already does in the normal editor.
+
+## Koko v1.4.2 — Review Workspace
+
+- Rally Review Mode now switches to a dedicated desktop workspace with a sticky
+  authoritative score/game HUD, video preview, independently scrolling event
+  history below the video, and a compact Review-only control rail.
+- ROI/detector, intro, output, render, statistics, and Tournament Highlight
+  controls are hidden only while Review is active and return unchanged on exit.
+- The event history keeps the existing single DOM/render source and click-to-seek,
+  selection, deletion, and Highlight behavior. New events follow the bottom only
+  while live follow is enabled; scrolling upward pauses it and shows a
+  **Return to latest event** button. Historical edits preserve scroll position.
+- The HUD is repainted from the existing Python `/fold` result, so scoring, new
+  games, Undo, deletion, JSON events, and manual missed rallies cannot drift from
+  the normal editor score. Manual rallies still do not affect candidate progress.
+
+## Koko v1.4.1 — Manual Missed-Rally Review
+
+- In Rally Review Mode, Enter still confirms the selected detector candidate,
+  while S now creates a normal serve at the current global playhead time without
+  associating it with any candidate.
+- A/B completes an open manual rally through the normal event path. With auto-
+  advance enabled, Review moves to the earliest unreviewed candidate strictly
+  after the manual point; if none exists, Review stays open and reports it.
+- Manual rallies do not affect candidate progress. Enter and X are guarded while
+  a manual serve awaits a score; Undo and event deletion reconcile the manual
+  state without changing candidate state, and H still targets the latest
+  completed rally after auto-advance.
+
+## Koko v1.4 — Rally Review Mode
+
+- Added a focused, keyboard-first review panel for chronological detector
+  candidates. Enter confirms one serve and starts playback; A/B score through
+  the existing event path; X skips; `[`/`]` revisit candidates; H retains the
+  latest-completed-rally behavior.
+- Review navigation reuses the virtual multi-file timeline, seeks to a clamped
+  0.8-second pre-roll, and pauses each newly selected candidate.
+- Candidate rows now show current, completed, skipped, unreviewed, and
+  low-confidence states plus live progress counts and the authoritative score.
+- Auto-play after serve and auto-advance after scoring default on and remain set
+  across New Match during the app session.
+- Review-to-event associations use in-memory candidate and event object identity;
+  a selected normal candidate can also adopt an S made at its start. Undo and
+  manual event deletion reconcile state without changing tags JSON;
+  review progress intentionally does not persist across restart or detector rerun.
+
 ## Koko v1.3.2 — Autofill UI Polish
 
 - Safari and Chromium saved-information autofill now preserves the structured

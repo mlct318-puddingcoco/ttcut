@@ -140,5 +140,60 @@ class ScoreboardTests(unittest.TestCase):
         self.assertIn("PlayResX: 3840", sample(size=(3840, 2160)))
 
 
+class ServerStateTests(unittest.TestCase):
+    """The UI must display fold_full.cur.server; rotation stays here in Python."""
+
+    fmt = dict(target=11, deuce="standard", cap=12)
+    start = dict(games=[0, 0], points=[0, 0], scope="every")
+
+    def cur(self, events, first_server=0):
+        return fold_full(events, self.fmt, self.start, first_server)["cur"]
+
+    def test_regular_and_deuce_rotation_sequence(self):
+        winners = ["A"] * 10 + ["B"] * 10 + ["A", "B"]
+        expected = [
+            (0, 0, 0),
+            (1, 0, 0), (2, 0, 1), (3, 0, 1), (4, 0, 0),
+            (5, 0, 0), (6, 0, 1), (7, 0, 1), (8, 0, 0),
+            (9, 0, 0), (10, 0, 1),
+            (10, 1, 1), (10, 2, 0), (10, 3, 0), (10, 4, 1),
+            (10, 5, 1), (10, 6, 0), (10, 7, 0), (10, 8, 1),
+            (10, 9, 1), (10, 10, 0),
+            (11, 10, 1), (11, 11, 0),
+        ]
+        events, actual = [], [(0, 0, self.cur([])["server"])]
+        for index, winner in enumerate(winners, 1):
+            events.append(dict(t=float(index), type="point", winner=winner))
+            state = self.cur(events)
+            actual.append((state["a"], state["b"], state["server"]))
+        self.assertEqual(actual, expected)
+
+        # An open rally's S event does not advance the next-server field.
+        open_rally = events + [dict(t=30.0, type="serve")]
+        self.assertEqual(self.cur(open_rally)["server"], self.cur(events)["server"])
+
+    def test_game_undo_and_deletion_recompute_server(self):
+        events = [dict(t=float(i + 1), type="point", winner=winner)
+                  for i, winner in enumerate(["A"] * 10 + ["B"] * 10 + ["A", "B"])]
+        self.assertEqual(self.cur(events)["server"], 0)       # 11:11
+        self.assertEqual(self.cur(events[:-1])["server"], 1) # Undo/delete B point => 11:10
+
+        new_game = events + [dict(t=30.0, type="game")]
+        self.assertEqual(self.cur(new_game)["server"], 1)
+        self.assertEqual(self.cur(new_game[:-1])["server"], 0) # delete N/game
+
+        with_serve = events + [dict(t=30.0, type="serve")]
+        self.assertEqual(self.cur(with_serve)["server"], 0)
+        self.assertEqual(self.cur(with_serve[:-1])["server"], 0) # delete S
+
+        eleven_zero = [dict(t=float(i + 1), type="point", winner="A")
+                       for i in range(11)]
+        won = self.cur(eleven_zero)
+        self.assertTrue(won["pending"])
+        self.assertEqual(won["server"], 1) # next game's first server
+        self.assertEqual(self.cur([], first_server=1)["server"], 1)
+        self.assertEqual(self.cur([dict(t=1.0, type="game")], first_server=1)["server"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
