@@ -1,210 +1,213 @@
-# ttcut
+# Koko ttcut
 
-Turn raw table tennis footage into a tight, scored match video — cuts the ball-chasing, burns in a live scoreboard, and finishes on a match-summary card.
+Turn raw table-tennis footage into a compact, scored match video with assisted rally detection, keyboard-first human review, highlights, and organized local output.
+
+Koko ttcut is an enhanced fork of [MikaDD-TW/ttcut](https://github.com/MikaDD-TW/ttcut). It keeps the original project's practical manual tagging and FFmpeg rendering foundation, then adds a review workspace and a complete multi-match production workflow. The project remains available under the original [MIT License](LICENSE).
 
 **English** · [繁體中文](README.zh-TW.md)
 
-No account or upload. Your video never leaves your machine.
+Koko ttcut runs locally. The application itself does not require an account or upload your source video to a cloud service.
 
-<img width="1905" height="934" alt="ttcut demo" src="https://github.com/user-attachments/assets/54aef9c3-1198-4d8e-90f7-29a79757e5ff" />
+## What Koko ttcut does
 
+| Capability | Koko v1.4 workflow |
+| --- | --- |
+| **Assisted Rally Detection** | Finds candidates from visual activity inside a selected ROI, with audio used as supporting confidence evidence. Detection is a review aid, not an automatic scoring system. |
+| **Rally Review Mode** | Opens candidates in chronological order for fast keyboard confirmation, scoring, skipping, and navigation. |
+| **Manual Missed-Rally Recovery** | Press `S` at the real serve time, then `A` or `B`, without leaving Review Mode. |
+| **Review Workspace** | Keeps an authoritative score HUD, next-serve indication (`應發球`), candidate progress, video, and event history together. |
+| **Multi-file Match** | Treats 2–N consecutive clips as one continuous global match timeline. |
+| **Scoreboard** | Renders the Koko color scoreboard from manually confirmed events; manual scoring remains authoritative. |
+| **Highlight Marking** | Marks completed rallies during review or editing for later reuse. |
+| **Tournament Highlight Builder** | Reviews and combines highlights from multiple matches into one compilation. |
+| **Intro & Thumbnail** | Builds a three-second intro over natural source footage and automatically generates an optional matching YouTube thumbnail, with per-row single-line text fitting. |
+| **Organized Output** | Writes the MP4, optional thumbnail, and `ttcut-data/*.tags.json` in a predictable match-folder layout. |
 
-<img width="1377" height="883" alt="image" src="https://github.com/user-attachments/assets/74a01743-9fb1-48c3-ae74-9201e4a50c91" />
+The original ttcut workflow centers on direct `S` / `A` / `B` manual tagging. Koko preserves that reliable path and adds assisted candidate detection, human review, multi-file handling, and tournament-level output. It does **not** claim fully automatic or perfect rally detection: the reviewer decides which candidates are real, and the human-entered score is the source of truth.
 
+<!-- Add a verified Koko v1.4 Review Workspace screenshot here when one is available. -->
 
-![The end-of-film stats board](stats-board.png)
+## Quick start
 
----
-
-## What it does
-
-You tag the rallies once in a browser, and ttcut does the rest:
-
-- **Cuts the dead time.** Everything between a point and the next serve — picking the ball up, walking back, towelling off — is removed. A 40-minute recording usually lands somewhere around 12–15 minutes.
-- **Burns in a scoreboard.** Names, games, and the running score sit in the corner for the whole film, derived from your tags rather than typed in by hand.
-- **Ends on a summary card.** Optionally freezes the last frame and draws a per-game score table plus three metrics for each player.
-- **Marks highlights as you score.** After `A` or `B`, press `H` to flag that completed rally in the same tags JSON for a future tournament compilation.
-
-Tagging is manual on purpose. There is no ball tracking to misfire, and no model to download — you press `S` on the serve and `A`/`B` on the point, which is about as fast as watching the match anyway.
-
-## Requirements
+### Requirements
 
 - **Python 3.8 or newer**
-- **ffmpeg**, built with `libass` (needed by the `subtitles` filter that draws the scoreboard)
+- **FFmpeg** with `libass` support (required by the `subtitles` filter used for scoreboards)
+
+Install FFmpeg using the currently documented path for your platform:
 
 ```bash
 # macOS
 brew install ffmpeg
 
 # Windows — download a build from https://www.gyan.dev/ffmpeg/builds/
-# and put ffmpeg.exe next to the script, or pass --ffmpeg "C:\ffmpeg\bin"
+# Put ffmpeg.exe beside the script, or pass --ffmpeg "C:\ffmpeg\bin"
 
 # Debian / Ubuntu
 sudo apt install ffmpeg
 ```
 
-ttcut looks for ffmpeg on `PATH`, then beside the script, then in the usual Windows install locations. Without it you can still tag and export JSON — you just can't render.
+ttcut searches `PATH`, the script directory, and common Windows install locations. On Apple Silicon Macs it also prefers `/opt/homebrew/opt/ffmpeg-full/bin/ffmpeg` when that installed build provides the required subtitle support. Without FFmpeg, you can still tag and export JSON, but you cannot render a finished video.
 
-## Quick start
+### Start the app
 
 ```bash
+# Traditional Chinese interface
 python3 ttcut_v2_3.py
+
+# English interface
+python3 ttcut_v2_3_EN.py
 ```
 
-That starts a local server on `127.0.0.1` and opens your browser. Then:
+The script starts a local server on `127.0.0.1` and opens the browser interface.
 
-1. **Load video** for one recording, or **Load multiple videos…** for consecutive files from the same match. Multi-file selection starts in natural filename order; the file list shows each duration, global start/end, and total length. Use ↑/↓ before tagging to correct the order.
-2. Type the two player names and pick who serves first.
-3. Play, and tag: `S` the instant the ball leaves the bat on a serve, `A` or `B` when the point is won. Press `H` if that completed rally belongs in the highlights; press it again to remove the flag.
-4. Tick **Stats board** if you want the summary card at the end.
-5. **Render video.** Standard quality is recommended. The CPU based maximum quality option is much slower.
-6. Optionally add a three second title card with tournament, category, and separate player/school fields, plus a matching 1280×720 YouTube thumbnail. Player labels such as `Name (School)` can populate the intro fields with the autofill button.
-7. Choose **Output organization**. New matches default to **One folder per match**; **Same folder** retains the previous layout. The suggested name uses all six structured intro fields, `<tournament>_<category>_<player A>(<school A>)VS<player B>(<school B>).mp4`, even when the intro is disabled; otherwise it falls back to `<source>.cut.mp4`. **Save As…** chooses the destination root and basename. Its choice stays fixed as you edit the intro.
+1. Load one recording, or choose **Load multiple videos…** for consecutive clips from the same match.
+2. Enter both player names, the first server, and the match format.
+3. Either tag manually with `S`, `A`, and `B`, or select an ROI, run rally analysis, and enter **Rally Review Mode**.
+4. Review the score and serve indication. Mark completed rallies with `H` when they belong in a highlight compilation.
+5. Choose the Koko or original ttcut scoreboard, optional stats board, intro, thumbnail, quality, and output organization.
+6. Render the match locally with FFmpeg.
 
-The tournament, category, player names, and school/sublabel level use one common
-font size by default. Only an individual row or side that exceeds its width box
-shrinks, and tournament/category text stays on one line. The three-second intro
-and 1280x720 thumbnail use the same typography calculation.
+## Core workflow: detection and Rally Review Mode
 
-With **One folder per match**, output goes to `<root>/<basename>/<basename>.mp4` and `<root>/<basename>/<basename>.thumbnail.jpg`; tags go to `<root>/<basename>/ttcut-data/<basename>.tags.json`. Automatic output uses `_2`, `_3`, and so on when that match folder already exists. **Same folder** keeps the MP4, optional thumbnail, and tags together beside the source or in the Save As destination; automatic output suffixes an existing MP4. The output preview lists all three planned paths. Source recordings stay in their original locations. **New match** clears source segments, markers, score, and custom output path while keeping the organization preference; **Exit ttcut** stops the local server. Ctrl-C remains available.
+### Assisted candidate detection
 
-### Tournament Highlight Builder
+Pause on a frame that clearly shows the target table and both players, draw an ROI around that activity area, and run rally analysis. The detector uses motion inside the ROI and supporting audio confidence to propose candidate intervals. Audio cannot create a rally by itself or decide who won the point.
 
-Choose **建立賽事精彩集錦…** and select a tournament root. The independent Builder recursively discovers modern `*/ttcut-data/*.tags.json` and legacy match-folder `*.tags.json`, collects `highlight: true` point events, and lets you uncheck, preview, and reorder highlights and matches without changing any source tags. It renders one MP4 from the original source videos: a three-second overall title followed directly by the selected rallies in review order, with the Koko scoreboard at the score state for each point. The existing tournament/title/protagonist/school rows use the same 128 px base, independent single-line fitting, and 64 px floor as the normal-match intro; the 4K intro and 1280×720 thumbnail scale the same calculation proportionally. The title uses natural moving footage from the first selected rally, beginning at that rally's clip start and continuing across source-file boundaries when necessary; the matching thumbnail samples the same background sequence without blur, darkening, desaturation, or an overlay. A short source window freezes on its last frame, while setup failure safely falls back to the dark title card. It also writes a compact `.highlights.json` project manifest. Mixed media is normalized to 1080p/30 with aspect ratio preserved; common source resolution and frame rate are retained when all sources agree.
+Different source resolutions require an ROI for each segment. If the resolution is unchanged but the camera framing moves, enable per-segment ROI selection. Full analysis of 4K/60 fps HEVC footage may take several minutes.
 
-For multiple files, ttcut shows and saves one continuous clock. Candidate and event times, seeking, and cuts use this global time. Different resolution, frame rate, codec, or audio specs trigger a warning; rendering adjusts segments in one FFmpeg run and leaves no merged source file. If resolution differs, select an ROI for each segment before rally analysis. If the camera framing changes at the same resolution, enable the per-segment ROI option. The tags JSON stores source paths and offsets; reopening reports a missing segment by filename.
+Candidates may include false positives or miss real rallies. Low-confidence candidates stay visible for human judgment; selecting or previewing a candidate does not change match events.
 
 ### Rally Review Mode
 
-After rally analysis, **Rally Review Mode** provides a focused keyboard workflow. It opens the first unreviewed candidate at a paused, segment-clamped 0.8-second pre-roll. `Enter` confirms the selected candidate's serve and starts playback by default. If detection missed a real rally, seek to its actual serve and press `S`: this creates a normal serve at the current global playhead time without attaching it to the selected candidate. `A` or `B` completes whichever candidate-linked or manual rally is open. A completed manual rally auto-advances only to the earliest unreviewed candidate strictly later than its point time; it never changes candidate progress totals. `X` skips without creating an event; `[` and `]` navigate; `H` keeps its latest-completed-rally meaning. Arrow-key frame/second seeking remains available. Enter and X are guarded while a manual serve awaits A/B (or Z Undo). A candidate with a confirmed serve cannot be skipped until `Z` removes that serve, and skipped candidates have a **Restore unreviewed** action.
+Review Mode opens the first unreviewed candidate at a paused, segment-clamped 0.8-second pre-roll:
 
-Review Mode switches to a dedicated workspace: a sticky horizontal HUD keeps the authoritative current game, games won, points, next server (`🏓 應發球：player`), and candidate progress visible above the video; the same event-history DOM moves below the video in a 260–330 px independently scrolling panel; and the right side contains only current candidate controls and progress. ROI/detector setup, intro, output, statistics, render, and Tournament Highlight controls are hidden only during Review and return unchanged on exit. The HUD uses the existing Python fold result rather than separate UI score or serve-rotation state. Its server label has the same “who should serve the next point” meaning as the normal editor and falls back to A/B when a player name is empty.
+1. Press `Enter` to confirm the selected detector candidate as a serve. Auto-play is enabled by default.
+2. Press `A` or `B` when the point ends. This updates the same authoritative event and scoring path used by normal editing.
+3. Press `X` when the candidate is not a rally, or `[` / `]` to move between candidates.
+4. If detection missed a rally, seek to the actual serve and press `S`, then score with `A` or `B`. This manual rally does not alter candidate progress.
+5. Press `H` to toggle the relevant completed rally as a highlight.
 
-New events follow the bottom of the event panel while live follow is active. Scrolling upward pauses follow and reveals **↓ Return to latest event**; clicking it, or scrolling back within 48 px of the bottom, resumes follow. Historical row selection and Highlight/star changes preserve the current event scroll position. Review state remains session-local because detector candidates are not part of tags JSON: rerunning detection, starting a new match, or restarting clears it. The auto-play and auto-advance checkboxes remain set across new matches in the same app session.
+The dedicated Review Workspace keeps the current game, games won, points, the player who should serve the next point (`🏓 應發球：player`), and candidate progress in a sticky HUD. Event history remains independently scrollable below the video. The HUD uses the same Python scoring result as the normal editor; it does not maintain a separate score or serve-rotation state.
 
-### Video scoreboard style
+Detector candidates and Review progress are session-local and are not written to the tags JSON. Rerunning detection, starting a new match, or restarting the app clears that review state. Confirmed match events and highlight flags remain in the normal tags file.
 
-The **Scoreboard style** selector offers **Koko color table** (the default for new tags) and the original **ttcut** board. It affects only the rendered video. The choice is saved as `scoreboard.style` in the tags JSON; older tags without this field continue to use the original board. Koko uses two fixed rows in the lower left: a wide dark name cell, a blue `#19559B` games cell, and a green `#14703F` points cell. Names shrink within their cell when needed; numeric cells keep their size. The video board has no server marker. For command-line renders, `--scoreboard-style koko|ttcut` overrides the JSON choice.
+## Final match output
 
-### Keyboard
+### Koko scoreboard and authoritative scoring
 
-| Key | Action | Key | Action |
-| --- | --- | --- | --- |
-| `space` | play / pause | `←` `→` | step one frame |
-| `S` | serve | `⇧←` `⇧→` | step 1 second |
-| `A` | point to A | `⌥←` `⌥→` | step 5 seconds |
-| `B` | point to B | `1` `2` `3` `4` | 0.5× / 1× / 1.5× / 2× |
-| `H` | toggle selected/latest completed rally highlight | `Z` | undo the latest event |
-| `N` | new game |  |  |
+The **Scoreboard style** selector offers **Koko color table** for new tags and the original **ttcut** board for compatibility. Koko uses two fixed rows in the lower left: a dark name cell, blue `#19559B` games cell, and green `#14703F` points cell. Long names shrink inside the name cell; the rendered board intentionally has no server marker.
 
-Clicking a historical point row seeks to it and selects it with an orange accent; `H` then toggles that selected rally. With no selected historical point, `H` still targets the latest rally that has both a serve and a point. Starting a new candidate/serve/point clears the historical selection, and an open serve must be scored first. Point rows also have a bordered star control that toggles without seeking; highlighted rows show `★ 精彩球`, and the header shows the live count. `×` deletes an event. The flag lives on the point event itself, for example `{"t": 25.0, "type": "point", "winner": "B", "highlight": true}`. Selection is UI-only and is never written to JSON; older JSON without the highlight field loads with zero highlights.
+The scoreboard is derived from manually confirmed serve, point, and game events. Candidate confidence never changes the score. Serve rotation is derived from the first server and match rules: two serves each, one each at deuce, with the other player starting the next game.
 
-## Match format
+### Intro and thumbnail
 
-| Setting | What it's for |
+The optional normal-match intro runs for three seconds over the natural opening source video and audio; the scoreboard begins with the match itself. Tournament, category, player, and school/sublabel text shares one base size. Only a row or side that exceeds its width box shrinks, keeping each line intact. When enabled, the matching 1280×720 YouTube thumbnail is generated automatically with the same typography calculation.
+
+### Stats board
+
+The optional stats board holds the last frame and displays per-game scores plus total points, service win rate, and longest point streak. Service win rate depends on accurate serve events; missed or incorrect `S` events will make the derived rotation and rate inaccurate.
+
+![The optional end-of-film stats board](stats-board.png)
+
+## Highlights and Tournament Highlight Builder
+
+After a completed rally, press `H` to toggle its highlight flag. You can also select a historical point row or use its star control. The flag is stored on the point event in the match tags JSON.
+
+Choose **Tournament Highlight Builder** (`建立賽事精彩集錦…` in the Chinese interface) and select a tournament root. It recursively finds modern `*/ttcut-data/*.tags.json` and legacy match-folder `*.tags.json`, then collects valid `highlight: true` point events. You can preview, include/exclude, and reorder matches and rallies without modifying the source tags.
+
+The Builder outputs one MP4 with:
+
+- a three-second tournament intro over natural moving footage from the first selected rally;
+- selected rallies in the chosen review order, without per-match separator cards;
+- the Koko scoreboard at the authoritative score state for each rally;
+- an optional 1280×720 thumbnail using the same natural background and typography; and
+- a compact `ttcut-data/*.highlights.json` project manifest.
+
+Common source resolution and frame rate are retained when all media agree. Mixed media is normalized to 1920×1080 at 30 fps with aspect ratio preserved.
+
+## Multi-file matches and output organization
+
+Multiple source files share one continuous global clock. Candidate times, match events, seeking, and cuts all use this timeline. ttcut warns about differences in resolution, frame rate, codec, or audio and adjusts segments in one FFmpeg render without creating a merged source file. Source recordings remain in their original locations.
+
+With **One folder per match**, output uses this layout:
+
+```text
+<root>/
+└── <basename>/
+    ├── <basename>.mp4
+    ├── <basename>.thumbnail.jpg       # when enabled
+    └── ttcut-data/
+        └── <basename>.tags.json
+```
+
+Automatic output appends `_2`, `_3`, and so on if a match folder already exists. **Same folder** retains the earlier flat layout. The output preview shows the planned video, thumbnail, and tags paths before rendering.
+
+## Keyboard shortcuts
+
+Shortcuts are ignored while typing in a field or using an interactive control.
+
+| Key | Normal editor | Rally Review Mode |
+| --- | --- | --- |
+| `Space` | Play / pause | Play / pause |
+| `←` / `→` | Step one frame | Step one frame |
+| `Shift` + `←` / `→` | Seek 1 second | Seek 1 second |
+| `Option` / `Alt` + `←` / `→` | Seek 5 seconds | Seek 5 seconds |
+| `S` | Add a serve at the playhead | Add a manual missed-rally serve at the playhead, independent of the candidate |
+| `Enter` | — | Confirm the current detector candidate as a serve |
+| `A` / `B` | Award the point to A / B | Complete the open candidate-linked or manual rally |
+| `X` | — | Skip the current candidate |
+| `[` / `]` | — | Previous / next candidate |
+| `H` | Toggle the selected or latest completed rally highlight | Same |
+| `N` | New game | New game |
+| `Z` | Undo the latest event | Undo the latest event |
+| `1` / `2` / `3` / `4` | 0.5× / 1× / 1.5× / 2× playback | Same |
+
+An open manual serve must be completed with `A` / `B` or removed with `Z` before `Enter` or `X` can continue candidate review. A candidate with a confirmed serve also cannot be skipped until that serve is undone.
+
+## Match format and stats
+
+| Setting | Purpose |
 | --- | --- |
-| Game to *n* points | 11 by default; set 21 for the old scoring |
-| Standard / Capped | Standard is win-by-two. Capped ends the game when someone reaches the cap after 10:10 — useful for club rules that avoid endless deuces |
-| Start games | Continuing a match that's split across several video files |
-| Handicap | Starting points, applied every game or first game only |
+| Game to *n* points | 11 by default; set 21 for the old scoring system. |
+| Standard / Capped | Standard is win-by-two. Capped ends the game at the configured cap after 10:10. |
+| Start games | Continue a match whose earlier games were recorded separately. |
+| Handicap | Apply starting points every game or in the first game only. |
 
-Serve rotation is derived, not tagged: two serves each, one each at deuce, and the other player starts each new game. Handicap points don't shift the rotation, because they weren't played.
+Handicap points appear on the scoreboard but do not affect serve rotation or count as played points in the stats board.
 
-## The stats board
+## Command line rendering
 
-Tick **Stats board** and the last frame is held (1 second by default, adjustable) with a summary drawn over it. The corner scoreboard steps aside for it, and the audio is padded with silence so picture and sound stay the same length.
-
-**Top half** — the per-game table, in the order broadcasts use: name, games won, then each game's score. The winner of each game is set bright and the loser dimmed, and the player leading on games gets the accent colour.
-
-**Bottom half** — a side-by-side comparison: A's figure on the left, B's on the right, the metric name between them. Whichever side is ahead on a row is picked out in the accent colour.
-
-| Metric | Definition |
-| --- | --- |
-| **Total points** | Rallies actually won. Handicap starting points are shown on the scoreboard but are not counted here — nobody won them. |
-| **Service win rate** | Points won on own serve ÷ points served, with the raw fraction beside the label. This is the "how reliable are you when you start the rally" number. |
-| **Longest point streak** | Longest run of consecutive points, **carried across games**. Two 11:0 games back to back reads as 22, not 11. |
-
-The same numbers appear live in the sidebar as you tag, so you can sanity-check them before committing to a render.
-
-A caveat worth knowing: service win rate is only as good as your serve tags. If you skip the `S` on some rallies, those points still count towards points won and streaks, but the rotation — and therefore the rate — will drift.
-
-## Command line
-
-For re-rendering without opening the UI:
+For re-rendering an existing tags file without opening the UI:
 
 ```bash
 python3 ttcut_v2_3.py match.tags.json match.MOV
 python3 ttcut_v2_3.py match.tags.json match.MOV --quality max --stats --stats-hold 3
-python3 ttcut_v2_3.py match.tags.json match.MOV --dry-run      # print the cut list, render nothing
+python3 ttcut_v2_3.py match.tags.json match.MOV --dry-run
 ```
 
-| Flag | Default | Notes |
-| --- | --- | --- |
-| `-o`, `--out` | `<video>.cut.mp4` | output path |
-| `--lead` / `--tail` | from JSON | seconds kept before a serve / after a point |
-| `--min-cut` | `2.0` | shorter gaps are left alone rather than jump-cut |
-| `--cut-lets` / `--let-tail` | off / `1.5` | also cut the retrieval between lets |
-| `--stats` / `--no-stats` | from JSON | force the summary card on or off |
-| `--stats-hold` | `1.0` | seconds to hold the card |
-| `--accent` | `#FF7A18` | point digits and the bar beside the names |
-| `--quality` | `high` | `fast`, `high`, `max` (libx264 CRF — much slower) |
-| `--encoder` | platform default | `h264_videotoolbox` on Mac; `h264_nvenc`, `h264_qsv`, `h264_amf`, `libx264` on Windows |
-| `--crf` / `--preset` / `--bitrate` | — | override the quality knobs directly |
-| `--fps` | `source` | frame rate follows the source unless you give a number |
-| `--hdr` | `auto` | `tonemap`, `keep` (needs HEVC), or `ignore` |
-| `--size` | source | e.g. `1920x1080` |
-| `--hwaccel` | `auto` | `videotoolbox` on Mac, else `none`, `cuda`, `qsv` |
-| `--font` | platform default | font for the scoreboard names |
-| `--ffmpeg` | — | path to `ffmpeg.exe` or its folder |
-| `--port` / `--no-browser` | — | interface options |
+Important options include `--out`, `--lead`, `--tail`, `--min-cut`, `--stats`, `--quality`, `--encoder`, `--fps`, `--hdr`, `--size`, `--hwaccel`, `--font`, `--ffmpeg`, and `--scoreboard-style koko|ttcut`. Run `python3 ttcut_v2_3.py --help` for the authoritative full list. The default minimum cut is 2.5 seconds.
 
-Run `--help` for the full list.
+## Tags and implementation notes
 
-## Tags file
+Tags are plain JSON and record sources, source offsets, players, match settings, scoreboard style, intro metadata, and timestamped events. Highlight state is stored on its point event, for example:
 
-The export is plain JSON, safe to hand-edit:
-
-```jsonc
-{
-  "version": 2,
-  "fps": 59.94,
-  "players": { "A": "Player A", "B": "Player B" },
-  "firstServer": "A",
-  "format": { "pointsPerGame": 11, "deuce": "standard", "cap": 12 },
-  "start": {
-    "games":  { "A": 0, "B": 0 },
-    "points": { "A": 0, "B": 0 },
-    "handicapScope": "every"
-  },
-  "pads": { "tail": 1.0, "lead": 0.3 },
-  "scoreboard": { "accent": "#FF7A18" },
-  "stats": { "enabled": true, "hold": 1.0 },
-  "events": [
-    { "t": 12.35, "frame": 740, "type": "serve" },
-    { "t": 18.90, "frame": 1133, "type": "point", "winner": "A" },
-    { "t": 44.10, "frame": 2644, "type": "game" }
-  ]
-}
+```json
+{"t": 25.0, "type": "point", "winner": "B", "highlight": true}
 ```
 
-Files from older versions load fine; missing blocks fall back to defaults.
+Older tags files remain supported; missing blocks fall back to compatible defaults. Multi-file tags report missing source segments by filename when reopened.
 
-## How it works
+Rendering uses FFmpeg. Kept ranges are selected without first creating a merged source file, scoreboards are generated as ASS subtitles and burned into the video, and scoring is computed by the local Python process so the editor HUD and rendered output share one implementation.
 
-- **Cutting** uses ffmpeg's `select` filter over a list of kept ranges rather than `trim`+`concat`, which buffers whole decoded segments in memory. Slower, but it doesn't fall over on long 4K files.
-- **The scoreboard** is generated as an ASS subtitle track and burned in with the `subtitles` filter, so it scales cleanly to any resolution and costs nothing extra to redraw.
-- **The freeze** is `tpad=stop_mode=clone` on the video and `apad` on the audio.
-- **Scoring lives in one place.** The browser doesn't compute anything — it posts your events to the local Python process and renders what comes back. One implementation, so the preview and the burned-in board can't disagree.
+## Version and branches
 
-## Which file do I download?
+- **Koko v1.4** is the current stable public workflow; detailed maintenance changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+- **`koko`** is the stable customized branch and the GitHub default branch.
+- **`main`** is retained as the original/upstream baseline.
 
-| File | Interface |
-| --- | --- |
-| `ttcut_v2_3.py` | Traditional Chinese |
-| `ttcut_v2_3_EN.py` | English |
+## Credits and license
 
-The two are verified to produce identical scoring, cut planning, and stats. Both keep CJK-capable fonts for the burned-in names, so a tags file with Chinese player names renders correctly in either build.
+Koko ttcut is a fork and extension of [MikaDD-TW/ttcut](https://github.com/MikaDD-TW/ttcut), originally authored by Mika ([@MikaDD-TW](https://github.com/MikaDD-TW)). Koko-specific workflow changes are maintained in this fork; this README does not imply that the upstream project was created here from scratch.
 
-## Licence
-
-MIT — see [LICENSE](LICENSE). Author: Mika ([@MikaDD-TW](https://github.com/MikaDD-TW)). Built iteratively with Claude, acknowledged voluntarily.
+Licensed under the MIT License. See [LICENSE](LICENSE) for the copyright notice and full terms.
