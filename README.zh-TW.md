@@ -90,6 +90,8 @@ Review Mode 會從第一個未審候選開始，停在該候選前 0.8 秒；跨
 
 專用 Review Workspace 的固定 HUD 會顯示目前局號、雙方局數與分數、下一球應由誰發球（`🏓 應發球：球員`）及候選進度。影片下方保留可獨立捲動的事件歷史。HUD 直接使用一般編輯器相同的 Python 計分結果，不另存一套比分或輪替狀態。
 
+![Rally Review Mode 顯示影片、權威比分、應發球者、事件歷史與審查控制](docs/images/rally-review-mode.png)
+
 Detector 候選與 Review 進度只存在目前 session，不會寫入 tags JSON。重新分析、開新比賽或重啟程式後會清除；已確認的比賽事件與精彩球標記則照常保存在標記檔。
 
 ## 一般比賽成片
@@ -97,6 +99,8 @@ Detector 候選與 Review 進度只存在目前 session，不會寫入 tags JSON
 ### Koko 比分板與權威計分
 
 **比分板樣式**可選新標記預設的 **Koko 彩色表格**，也可切回 **ttcut 原版**以維持相容。Koko 樣式位於成片左下角，每位選手各一列：深色姓名欄、藍色 `#19559B` 局數欄與綠色 `#14703F` 分數欄。長姓名只會在姓名欄內縮小；成片比分板刻意不顯示發球記號。
+
+![一般比賽成片左下角的 Koko 比分板](docs/images/koko-scoreboard.png)
 
 比分板只由人工確認的發球、得分與換局事件推導；候選信心不會改變比分。發球輪替依先發球者與賽制計算：一般每人兩球，deuce 後每球換發，新一局由另一位先發。
 
@@ -115,6 +119,8 @@ Detector 候選與 Review 進度只存在目前 session，不會寫入 tags JSON
 完成一球後按 `H` 可切換精彩球；也可以先選取歷史得分列，或直接按該列星號。標記會存進該 point event 的 tags JSON。
 
 按 **建立賽事精彩集錦…** 並選擇賽事根目錄，即可進入獨立 Builder。它會遞迴找出新版 `*/ttcut-data/*.tags.json` 與舊版比賽資料夾內的 `*.tags.json`，收集有效的 `highlight: true` 得分事件。可以預覽、取消勾選並調整比賽與球序，不會修改來源 tags。
+
+![賽事精彩集錦 Builder 顯示可選場次與回合預覽](docs/images/tournament-highlight-builder.png)
 
 Builder 會輸出一支 MP4，內容包括：
 

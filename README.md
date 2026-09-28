@@ -90,6 +90,8 @@ Review Mode opens the first unreviewed candidate at a paused, segment-clamped 0.
 
 The dedicated Review Workspace keeps the current game, games won, points, the player who should serve the next point (`🏓 應發球：player`), and candidate progress in a sticky HUD. Event history remains independently scrollable below the video. The HUD uses the same Python scoring result as the normal editor; it does not maintain a separate score or serve-rotation state.
 
+![Rally Review Mode showing video, authoritative score, expected server, event history, and review controls](docs/images/rally-review-mode.png)
+
 Detector candidates and Review progress are session-local and are not written to the tags JSON. Rerunning detection, starting a new match, or restarting the app clears that review state. Confirmed match events and highlight flags remain in the normal tags file.
 
 ## Final match output
@@ -97,6 +99,8 @@ Detector candidates and Review progress are session-local and are not written to
 ### Koko scoreboard and authoritative scoring
 
 The **Scoreboard style** selector offers **Koko color table** for new tags and the original **ttcut** board for compatibility. Koko uses two fixed rows in the lower left: a dark name cell, blue `#19559B` games cell, and green `#14703F` points cell. Long names shrink inside the name cell; the rendered board intentionally has no server marker.
+
+![Final match output with the Koko scoreboard in the lower left](docs/images/koko-scoreboard.png)
 
 The scoreboard is derived from manually confirmed serve, point, and game events. Candidate confidence never changes the score. Serve rotation is derived from the first server and match rules: two serves each, one each at deuce, with the other player starting the next game.
 
@@ -115,6 +119,8 @@ The optional stats board holds the last frame and displays per-game scores plus 
 After a completed rally, press `H` to toggle its highlight flag. You can also select a historical point row or use its star control. The flag is stored on the point event in the match tags JSON.
 
 Choose **Tournament Highlight Builder** (`建立賽事精彩集錦…` in the Chinese interface) and select a tournament root. It recursively finds modern `*/ttcut-data/*.tags.json` and legacy match-folder `*.tags.json`, then collects valid `highlight: true` point events. You can preview, include/exclude, and reorder matches and rallies without modifying the source tags.
+
+![Tournament Highlight Builder with selectable matches and rally previews](docs/images/tournament-highlight-builder.png)
 
 The Builder outputs one MP4 with:
 
