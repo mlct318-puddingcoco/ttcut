@@ -3975,9 +3975,13 @@ class Handler(BaseHTTPRequestHandler):
                 offset = source["offset"]
                 for item in result.get("candidates", []):
                     item = dict(item)
-                    for key in ("start", "end", "visualStart", "visualEnd", "splitPoint"):
+                    for key in ("start", "end", "visualStart", "visualEnd", "splitPoint",
+                                "originalEnd", "endRefinePoint"):
                         if item.get(key) is not None:
                             item[key] = round(item[key] + offset, 3)
+                    if item.get("rescueWindow") is not None:
+                        item["rescueWindow"] = [round(value + offset, 3)
+                                                for value in item["rescueWindow"]]
                     item["splitChecks"] = [dict(check, point=round(check["point"] + offset, 3))
                                            if check.get("point") is not None else check
                                            for check in item.get("splitChecks", [])]

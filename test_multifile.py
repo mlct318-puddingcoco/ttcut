@@ -174,6 +174,8 @@ class VirtualTimelineTests(unittest.TestCase):
                              job=None, custom_out=str(Path(tmp) / 'custom.mp4'))
             result = dict(candidates=[dict(start=.2, end=.8, visualStart=.3,
                                            visualEnd=.7, splitPoint=.5,
+                                           originalEnd=.9, endRefinePoint=.65,
+                                           rescueWindow=[.1, 1.0],
                                            splitChecks=[dict(point=.4)])], diagnostics={})
             try:
                 with patch('ttcut_v2_3.detect_video', return_value=result):
@@ -181,6 +183,9 @@ class VirtualTimelineTests(unittest.TestCase):
                 candidates = seen[-1][1]['candidates']
                 self.assertEqual([c['start'] for c in candidates], [.2, 2.2])
                 self.assertEqual(candidates[1]['splitChecks'][0]['point'], 2.4)
+                self.assertEqual(candidates[1]['originalEnd'], 2.9)
+                self.assertEqual(candidates[1]['endRefinePoint'], 2.65)
+                self.assertEqual(candidates[1]['rescueWindow'], [2.1, 3.0])
                 handler._body = lambda: dict(separateRois=True, rois=[dict(x=0,y=0,w=1,h=1)])
                 handler._detect_rallies()
                 self.assertEqual(seen[-1][0], 400)

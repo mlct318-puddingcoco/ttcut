@@ -4,8 +4,11 @@ from rally_detection import (
     DetectionError,
     DetectorConfig,
     _motion_between,
+    analyze_rescue_window,
     analyze_motion,
     percentile,
+    propose_rescue_windows,
+    refine_candidate_end,
     validate_roi,
 )
 
@@ -235,6 +238,80 @@ class MotionTests(unittest.TestCase):
             item["right"] = .01
         candidates, _ = analyze_motion(metrics, [], DetectorConfig(), 20)
         self.assertEqual(candidates, [])
+
+
+class LocalRescueAndEndRefinementTests(unittest.TestCase):
+    def _coarse(self, active=None, one_sided=False):
+        result = []
+        for index in range(40):
+            motion = 2.4 if index == active else .15
+            left = motion if index == active else .1
+            right = (.12 if one_sided and index == active else
+                     motion * .9 if index == active else .2)
+            result.append(dict(t=index / 2, motion=motion,
+                               left=left, right=right))
+        return result
+
+    def _dense_burst(self, start=9.25, active=range(6, 15), one_sided=False):
+        result = []
+        for index in range(22):
+            on = index in active
+            motion = 4.0 if on else .12
+            result.append(dict(
+                t=start + index / 8, motion=motion,
+                left=3.6 if on else .1,
+                right=(.10 if one_sided and on else 4.2 if on else .12)))
+        return result
+
+    def test_sub_two_second_rally_missed_by_coarse_is_rescued_locally(self):
+        config = DetectorConfig()
+        impacts = [10.05, 10.42, 10.78]
+        windows = propose_rescue_windows(
+            self._coarse(active=21), impacts, [], config, 20)
+        self.assertEqual(len(windows), 1)
+        candidate = analyze_rescue_window(
+            self._dense_burst(), impacts, windows[0], config, 20)
+        self.assertIsNotNone(candidate)
+        self.assertLessEqual(candidate["duration"], 2.0)
+        self.assertTrue(candidate["rescueApplied"])
+        self.assertEqual(candidate["boundaryBasis"],
+                         "local-motion+audio-rescue")
+
+    def test_nearby_background_motion_is_not_a_rescue_candidate(self):
+        config = DetectorConfig()
+        impacts = [10.05, 10.42, 10.78]
+        windows = propose_rescue_windows(
+            self._coarse(active=21, one_sided=True), impacts, [], config, 20)
+        self.assertEqual(windows, [])
+        proposal = dict(start=9.25, end=12.0, coreStart=10.0, coreEnd=10.9)
+        self.assertIsNone(analyze_rescue_window(
+            self._dense_burst(one_sided=True), impacts, proposal, config, 20))
+
+    def test_end_refinement_shortens_overextended_candidate(self):
+        config = DetectorConfig()
+        candidate = dict(start=10.0, end=15.0, duration=5.0)
+        dense = self._dense_burst(start=11.5, active=range(0, 13))
+        refined = refine_candidate_end(
+            candidate, dense, [12.0, 12.45, 12.88], config)
+        self.assertTrue(refined["refinedEnd"])
+        self.assertLess(refined["end"], candidate["end"])
+        self.assertEqual(refined["endRefineBasis"],
+                         "dense-motion-fall+audio-quiet")
+
+    def test_end_refinement_never_moves_start(self):
+        config = DetectorConfig()
+        candidate = dict(start=10.0, end=15.0, duration=5.0)
+        refined = refine_candidate_end(
+            candidate, self._dense_burst(start=11.5, active=range(0, 13)),
+            [12.0, 12.45, 12.88], config)
+        self.assertEqual(refined["start"], candidate["start"])
+
+    def test_rescue_does_not_duplicate_overlapping_coarse_candidate(self):
+        existing = [dict(start=9.6, end=11.4)]
+        windows = propose_rescue_windows(
+            self._coarse(active=21), [10.05, 10.42, 10.78],
+            existing, DetectorConfig(), 20)
+        self.assertEqual(windows, [])
 
 
 if __name__ == "__main__":

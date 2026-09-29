@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rally Detection v0.2: ROI visual motion with auxiliary audio evidence.
+"""Rally Detection v3.0-A: coarse ROI motion with local dense refinement.
 
 The detector is intentionally conservative about side effects: it only returns
 review candidates.  It never creates ttcut events and never decides a winner.
@@ -18,7 +18,7 @@ from array import array
 from dataclasses import dataclass
 
 
-METHOD = "roi-motion-audio-aux-v0.2.2"
+METHOD = "roi-motion-audio-local-rescue-v3.0-a"
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,32 @@ class DetectorConfig:
     audio_sample_rate: int = 8000
     audio_frame_ms: int = 10
     audio_highpass_hz: int = 900
+    # v3.0-A keeps the 2 fps coarse path above. Denser decoding is restricted
+    # to short, evidence-backed windows and candidate end boundaries.
+    rescue_fps: float = 8.0
+    rescue_audio_cluster_gap_seconds: float = 0.65
+    rescue_min_audio_hits: int = 3
+    rescue_max_audio_span_seconds: float = 2.6
+    rescue_window_padding_seconds: float = 0.75
+    rescue_coarse_motion_ratio: float = 0.62
+    rescue_min_side_balance: float = 0.18
+    rescue_min_visual_seconds: float = 0.45
+    rescue_min_strong_seconds: float = 0.65
+    rescue_long_peak_ratio: float = 1.60
+    rescue_max_candidate_seconds: float = 3.6
+    rescue_pre_roll_seconds: float = 0.35
+    rescue_post_roll_seconds: float = 0.20
+    rescue_overlap_guard_seconds: float = 0.35
+    rescue_adjacent_guard_seconds: float = 1.2
+    end_refine_fps: float = 8.0
+    end_refine_lookback_seconds: float = 3.5
+    end_refine_lookahead_seconds: float = 0.65
+    end_refine_quiet_seconds: float = 0.50
+    end_refine_audio_quiet_seconds: float = 0.45
+    end_refine_min_shorten_seconds: float = 0.25
+    end_refine_max_shorten_seconds: float = 2.0
+    end_refine_post_roll_seconds: float = 0.12
+    end_refine_windows_per_10_minutes: int = 4
 
 
 class DetectionError(RuntimeError):
@@ -126,18 +152,22 @@ def _motion_between(previous, current, width, pixel_delta):
     return total / n, left / max(1, left_n), right / max(1, right_n)
 
 
-def decode_motion(video_path, ffmpeg, roi, config, start=0.0, end=None):
+def decode_motion(video_path, ffmpeg, roi, config, start=0.0, end=None,
+                  sample_fps=None, keyframes_only=True):
     roi = validate_roi(roi)
+    sample_fps = sample_fps or config.sample_fps
     crop = (
         f"crop=trunc(iw*{roi['w']}/2)*2:trunc(ih*{roi['h']}/2)*2:"
         f"trunc(iw*{roi['x']}/2)*2:trunc(ih*{roi['y']}/2)*2"
     )
-    vf = (f"fps={config.sample_fps},{crop},"
+    vf = (f"fps={sample_fps},{crop},"
           f"scale={config.analysis_width}:{config.analysis_height}:flags=area,format=gray")
     # Some DJI HEVC files emit one recoverable PPS warning per decoded keyframe;
     # fatal-only avoids filling stderr while stdout is streamed frame-by-frame.
-    cmd = [ffmpeg, "-v", "fatal", "-skip_frame", "nokey",
-           "-ss", f"{max(0.0, start):.3f}",
+    cmd = [ffmpeg, "-v", "fatal"]
+    if keyframes_only:
+        cmd += ["-skip_frame", "nokey"]
+    cmd += ["-ss", f"{max(0.0, start):.3f}",
            "-i", os.path.abspath(video_path)]
     if end is not None:
         cmd += ["-t", f"{max(0.0, end - start):.3f}"]
@@ -152,7 +182,7 @@ def decode_motion(video_path, ffmpeg, roi, config, start=0.0, end=None):
         if len(frame) != frame_size:
             proc.kill()
             raise DetectionError("影片影格解碼不完整。")
-        t = start + frame_index / config.sample_fps
+        t = start + frame_index / sample_fps
         if previous is not None:
             whole, left, right = _motion_between(
                 previous, frame, config.analysis_width, config.pixel_delta)
@@ -605,6 +635,305 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
     return candidates, diagnostics
 
 
+def _interval_overlap(first_start, first_end, second_start, second_end):
+    return max(0.0, min(first_end, second_end) - max(first_start, second_start))
+
+
+def _interval_gap(first_start, first_end, second_start, second_end):
+    if _interval_overlap(first_start, first_end, second_start, second_end) > 0:
+        return 0.0
+    return max(first_start, second_start) - min(first_end, second_end)
+
+
+def _audio_clusters(audio_impacts, max_gap):
+    clusters = []
+    for impact in sorted(audio_impacts):
+        if not clusters or impact - clusters[-1][-1] > max_gap:
+            clusters.append([impact])
+        else:
+            clusters[-1].append(impact)
+    return clusters
+
+
+def propose_rescue_windows(metrics, audio_impacts, candidates, config=None,
+                           duration=None):
+    """Return short local-rescan windows backed by audio and coarse motion.
+
+    Audio is allowed to propose a window, but not a rally. A proposal must also
+    contain bilateral coarse ROI motion and must not overlap an existing coarse
+    candidate. The dense pass applies the final visual gate.
+    """
+    config = config or DetectorConfig()
+    if not metrics or not audio_impacts:
+        return []
+    raw = [item["motion"] for item in metrics]
+    smoothed = _smooth(raw)
+    baseline = percentile(smoothed, config.baseline_percentile)
+    activity = percentile(smoothed, config.activity_percentile)
+    threshold_delta = max(config.min_threshold,
+                          (activity - baseline) * config.threshold_fraction)
+    proposal_floor = baseline + threshold_delta * config.rescue_coarse_motion_ratio
+    frame_seconds = 1 / config.sample_fps
+    stop = duration if duration is not None else metrics[-1]["t"] + frame_seconds
+    windows = []
+    for cluster in _audio_clusters(
+            audio_impacts, config.rescue_audio_cluster_gap_seconds):
+        if len(cluster) < config.rescue_min_audio_hits:
+            continue
+        audio_span = cluster[-1] - cluster[0]
+        if audio_span > config.rescue_max_audio_span_seconds:
+            continue
+        core_start = max(0.0, cluster[0] - .12)
+        core_end = min(stop, cluster[-1] + .12)
+        start = max(0.0, core_start - config.rescue_window_padding_seconds)
+        end = min(stop, core_end + config.rescue_window_padding_seconds)
+        if any(
+            _interval_overlap(start, end, item["start"], item["end"])
+            >= config.rescue_overlap_guard_seconds
+            or _interval_gap(core_start, core_end, item["start"], item["end"])
+            <= config.rescue_adjacent_guard_seconds
+            for item in candidates
+        ):
+            continue
+        nearby = [i for i, item in enumerate(metrics)
+                  if start - frame_seconds <= item["t"] <= end + frame_seconds]
+        elevated = [i for i in nearby if smoothed[i] >= proposal_floor]
+        if not elevated:
+            continue
+        # Smoothing spreads one burst into adjacent quiet frames. Use the raw
+        # peak for the bilateral check so an idle neighbour cannot make a
+        # one-sided walk look balanced.
+        strongest = max(elevated, key=lambda i: raw[i])
+        side_balance = (min(metrics[strongest]["left"], metrics[strongest]["right"])
+                        / max(.001, metrics[strongest]["left"],
+                              metrics[strongest]["right"]))
+        if side_balance < config.rescue_min_side_balance * .65:
+            continue
+        windows.append(dict(
+            start=round(start, 3), end=round(end, 3),
+            coreStart=round(core_start, 3), coreEnd=round(core_end, 3),
+            audioHits=len(cluster), coarseMotionPeak=round(smoothed[strongest], 2),
+            coarseMotionRatio=round(smoothed[strongest] / max(.001, proposal_floor), 2),
+            coarseSideBalance=round(side_balance, 3),
+        ))
+    # Overlapping audio clusters describe one suspicious episode. Keep one
+    # dense decode and retain the combined core/evidence.
+    merged = []
+    for window in windows:
+        if not merged or window["start"] > merged[-1]["end"]:
+            merged.append(window)
+            continue
+        previous = merged[-1]
+        previous["end"] = max(previous["end"], window["end"])
+        previous["coreStart"] = min(previous["coreStart"], window["coreStart"])
+        previous["coreEnd"] = max(previous["coreEnd"], window["coreEnd"])
+        previous["audioHits"] += window["audioHits"]
+        if window["coarseMotionPeak"] > previous["coarseMotionPeak"]:
+            previous["coarseMotionPeak"] = window["coarseMotionPeak"]
+            previous["coarseMotionRatio"] = window["coarseMotionRatio"]
+            previous["coarseSideBalance"] = window["coarseSideBalance"]
+    return merged
+
+
+def analyze_rescue_window(metrics, audio_impacts, proposal, config=None,
+                          duration=None):
+    """Validate one proposed rescue window using dense visual evidence."""
+    config = config or DetectorConfig()
+    if len(metrics) < 4:
+        return None
+    raw = [item["motion"] for item in metrics]
+    smoothed = _smooth(raw)
+    baseline = percentile(smoothed, .25)
+    activity = percentile(smoothed, .88)
+    delta = max(.28, (activity - baseline) * .42)
+    threshold = baseline + delta
+    support = baseline + max(.16, delta * .48)
+    support_active = [i for i, value in enumerate(smoothed) if value >= support]
+    max_gap = max(1, round(.28 * config.rescue_fps))
+    groups = []
+    for index in support_active:
+        if not groups or index - groups[-1][-1] > max_gap:
+            groups.append([index])
+        else:
+            groups[-1].append(index)
+    best = None
+    for group in groups:
+        first, last = group[0], group[-1]
+        visual_start = metrics[first]["t"]
+        visual_end = metrics[last]["t"]
+        visual_span = visual_end - visual_start + 1 / config.rescue_fps
+        if visual_span < config.rescue_min_visual_seconds:
+            continue
+        if _interval_overlap(visual_start, visual_end + 1 / config.rescue_fps,
+                             proposal["coreStart"], proposal["coreEnd"]) <= 0:
+            continue
+        strong = [i for i in group if smoothed[i] >= threshold]
+        if len(strong) < max(2, math.ceil(
+                config.rescue_min_strong_seconds * config.rescue_fps)):
+            continue
+        window = metrics[first:last + 1]
+        left_mean = sum(item["left"] for item in window) / len(window)
+        right_mean = sum(item["right"] for item in window) / len(window)
+        side_balance = min(left_mean, right_mean) / max(.001, left_mean, right_mean)
+        if side_balance < config.rescue_min_side_balance:
+            continue
+        start = max(0.0, visual_start - config.rescue_pre_roll_seconds)
+        stop = duration if duration is not None else metrics[-1]["t"] + 1 / config.rescue_fps
+        end = min(stop, visual_end + config.rescue_post_roll_seconds)
+        if end - start > config.rescue_max_candidate_seconds:
+            continue
+        hits = [t for t in audio_impacts if start - .08 <= t <= end + .08]
+        if len(hits) < config.rescue_min_audio_hits:
+            continue
+        pre = smoothed[max(0, first - 4):first]
+        post = smoothed[last + 1:min(len(smoothed), last + 5)]
+        motion_peak = max(smoothed[first:last + 1])
+        peak_threshold_ratio = motion_peak / max(.001, threshold)
+        # v3.0-A targets brief rallies. A rescue that grows beyond two seconds
+        # needs a distinctly stronger local visual peak; otherwise it is more
+        # likely to be between-rally walking/reset activity.
+        if end - start > 2.0 and peak_threshold_ratio < config.rescue_long_peak_ratio:
+            continue
+        rise = motion_peak - (sum(pre) / len(pre) if pre else baseline)
+        fall = motion_peak - (sum(post) / len(post) if post else baseline)
+        # A complete local burst is the main guard against nearby walking or
+        # continuous background-table motion.
+        if rise < delta * .20 or fall < delta * .20:
+            continue
+        motion_mean = sum(smoothed[first:last + 1]) / (last - first + 1)
+        active_ratio = len(group) / max(1, last - first + 1)
+        visual_strength = min(1.0, max(0.0, (motion_mean - baseline)
+                                      / max(.001, activity - baseline)))
+        audio_support = min(1.0, len(hits) / max(2.0, visual_span * 1.8))
+        confidence = min(.99, .36 + .34 * visual_strength
+                         + .18 * side_balance + .08 * active_ratio
+                         + .04 * audio_support)
+        candidate = dict(
+            start=round(start, 3), end=round(max(start, end), 3),
+            duration=round(max(0.0, end - start), 3),
+            visualStart=round(visual_start, 3), visualEnd=round(visual_end, 3),
+            motionMean=round(motion_mean, 2), motionPeak=round(motion_peak, 2),
+            activeRatio=round(active_ratio, 2), sideBalance=round(side_balance, 2),
+            strongFrames=len(strong), supportFrames=len(group),
+            audioHits=len(hits), audioSupport=round(audio_support, 2),
+            confidence=round(confidence, 2), baseConfidence=round(confidence, 2),
+            confidenceTier="low" if confidence < .68 else "normal",
+            shortEvidence=dict(
+                rise=round(rise, 2), fall=round(fall, 2), completePattern=True,
+                peakThresholdRatio=round(peak_threshold_ratio, 2),
+                penalty=0.0, penaltyReasons=[]),
+            boundaryBasis="local-motion+audio-rescue",
+            splitPoint=None, motionValleyScore=None, motionValleyDuration=None,
+            valleyDepth=None, splitAudioHits=0, splitVisualConfidence=None,
+            splitAudioPenalty=0.0, splitConfidence=None,
+            splitDecision="keep", splitReason="short_rescue", splitChecks=[],
+            rescueApplied=True,
+            rescueBasis="audio-cluster+bilateral-coarse-motion+dense-motion",
+            rescueWindow=[proposal["start"], proposal["end"]],
+            rescueAudioHits=len(hits), rescueSampleFps=config.rescue_fps,
+            rescueCoarseMotionPeak=proposal.get("coarseMotionPeak"),
+            rescueCoarseMotionRatio=proposal.get("coarseMotionRatio"),
+            rescueCoarseSideBalance=proposal.get("coarseSideBalance"),
+            refinedEnd=False, originalEnd=round(end, 3), endRefineBasis=None,
+        )
+        score = (len(hits), len(strong), side_balance, motion_peak)
+        if best is None or score > best[0]:
+            best = (score, candidate)
+    return best[1] if best else None
+
+
+def refine_candidate_end(candidate, metrics, audio_impacts, config=None):
+    """Shorten an over-extended end at a dense visual/audio quiet transition.
+
+    Start is copied verbatim. Refinement is deliberately one-way in v3.0-A:
+    the existing coarse post-roll already protects against early cuts, while an
+    extension would be much more likely to absorb unrelated background motion.
+    """
+    config = config or DetectorConfig()
+    result = dict(candidate)
+    original_end = float(candidate["end"])
+    result.setdefault("rescueApplied", False)
+    result.setdefault("rescueBasis", None)
+    result.setdefault("rescueWindow", None)
+    result.setdefault("rescueAudioHits", 0)
+    result.setdefault("rescueSampleFps", None)
+    result.update(refinedEnd=False, originalEnd=round(original_end, 3),
+                  endRefineBasis=None)
+    if len(metrics) < 6:
+        return result
+    raw = [item["motion"] for item in metrics]
+    smoothed = _smooth(raw)
+    baseline = percentile(smoothed, .30)
+    activity = percentile(smoothed, .82)
+    delta = max(.24, (activity - baseline) * .38)
+    active_threshold = baseline + delta
+    quiet_threshold = baseline + delta * .58
+    quiet_frames = max(3, math.ceil(config.end_refine_quiet_seconds
+                                     * config.end_refine_fps))
+    before_frames = max(4, math.ceil(.75 * config.end_refine_fps))
+    for index in range(before_frames, len(metrics) - quiet_frames + 1):
+        point = metrics[index]["t"]
+        proposed_end = point + config.end_refine_post_roll_seconds
+        shortening = original_end - proposed_end
+        if shortening < config.end_refine_min_shorten_seconds:
+            continue
+        if shortening > config.end_refine_max_shorten_seconds:
+            continue
+        if proposed_end <= candidate["start"] + .45:
+            continue
+        before_indices = range(max(0, index - before_frames), index)
+        after_indices = range(index, min(len(metrics), index + quiet_frames))
+        if sum(smoothed[i] >= active_threshold for i in before_indices) < 2:
+            continue
+        if sum(smoothed[i] <= quiet_threshold for i in after_indices) < quiet_frames - 1:
+            continue
+        active_rows = [metrics[i] for i in before_indices
+                       if smoothed[i] >= active_threshold]
+        left = sum(item["left"] for item in active_rows) / len(active_rows)
+        right = sum(item["right"] for item in active_rows) / len(active_rows)
+        side_balance = min(left, right) / max(.001, left, right)
+        if side_balance < config.rescue_min_side_balance:
+            continue
+        recent_hits = [t for t in audio_impacts if point - 1.8 <= t <= point + .08]
+        quiet_hits = [t for t in audio_impacts
+                      if point + .08 < t <= point + config.end_refine_audio_quiet_seconds]
+        if len(recent_hits) < 2 or quiet_hits:
+            continue
+        result["end"] = round(proposed_end, 3)
+        result["duration"] = round(max(0.0, proposed_end - result["start"]), 3)
+        result["refinedEnd"] = True
+        result["endRefineBasis"] = "dense-motion-fall+audio-quiet"
+        result["endRefinePoint"] = round(point, 3)
+        result["endRefineDelta"] = round(proposed_end - original_end, 3)
+        result["endRefineSampleFps"] = config.end_refine_fps
+        return result
+    return result
+
+
+def _candidate_overlaps(candidate, others, minimum):
+    return any(_interval_overlap(candidate["start"], candidate["end"],
+                                 item["start"], item["end"]) >= minimum
+               for item in others)
+
+
+def _end_refine_priority(candidate, audio_impacts, config):
+    """Rank ends that already look over-extended in coarse/audio evidence."""
+    end = candidate["end"]
+    start = max(candidate["start"], end - config.end_refine_lookback_seconds)
+    hits = [t for t in audio_impacts if start <= t <= end + .08]
+    if len(hits) < 2:
+        return None
+    last_hit_gap = end - hits[-1]
+    if last_hit_gap < config.end_refine_min_shorten_seconds + .12:
+        return None
+    recent_cluster = [t for t in hits if hits[-1] - 1.8 <= t <= hits[-1]]
+    if len(recent_cluster) < 2:
+        return None
+    duration = candidate["end"] - candidate["start"]
+    # Long quiet tails are the strongest signal; duration is only a tiebreaker.
+    return last_hit_gap * 10 + min(duration, 12) / 12
+
+
 def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end=None,
                  config=None):
     if not os.path.isfile(video_path):
@@ -621,23 +950,103 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
     candidates, motion_diagnostics = analyze_motion(
         metrics, audio_impacts, config, stop)
     analyzed_end = metrics[-1]["t"] + 1 / config.sample_fps
+    stop = stop if stop is not None else analyzed_end
+
+    rescue_windows = propose_rescue_windows(
+        metrics, audio_impacts, candidates, config, stop)
+    rescued = []
+    local_decode_failures = []
+    rescue_decoded_seconds = 0.0
+    for window in rescue_windows:
+        try:
+            dense = decode_motion(
+                video_path, ffmpeg_path, roi, config,
+                window["start"], window["end"],
+                sample_fps=config.rescue_fps, keyframes_only=False)
+        except DetectionError as exc:
+            local_decode_failures.append(dict(stage="rescue", window=window,
+                                              error=str(exc)))
+            continue
+        rescue_decoded_seconds += window["end"] - window["start"]
+        candidate = analyze_rescue_window(
+            dense, audio_impacts, window, config, stop)
+        if candidate is None:
+            continue
+        if _candidate_overlaps(candidate, candidates + rescued,
+                               config.rescue_overlap_guard_seconds):
+            continue
+        rescued.append(candidate)
+    candidates.extend(rescued)
+    candidates.sort(key=lambda item: (item["start"], item["end"]))
+
+    priorities = []
+    for index, candidate in enumerate(candidates):
+        priority = _end_refine_priority(candidate, audio_impacts, config)
+        if priority is not None:
+            priorities.append((priority, index))
+    video_minutes = max(1.0, (stop - start) / 600.0)
+    end_window_budget = max(1, math.ceil(
+        config.end_refine_windows_per_10_minutes * video_minutes))
+    selected_end_indices = {index for _, index in sorted(
+        priorities, reverse=True)[:end_window_budget]}
+
+    refined = []
+    refined_count = 0
+    end_decoded_seconds = 0.0
+    for candidate_index, candidate in enumerate(candidates):
+        if candidate_index not in selected_end_indices:
+            refined.append(refine_candidate_end(candidate, [], [], config))
+            continue
+        window_start = max(start, candidate["end"]
+                           - config.end_refine_lookback_seconds)
+        window_end = min(stop, candidate["end"]
+                         + config.end_refine_lookahead_seconds)
+        if window_end - window_start < .75:
+            refined.append(refine_candidate_end(candidate, [], [], config))
+            continue
+        try:
+            dense = decode_motion(
+                video_path, ffmpeg_path, roi, config, window_start, window_end,
+                sample_fps=config.end_refine_fps, keyframes_only=False)
+        except DetectionError as exc:
+            local_decode_failures.append(dict(
+                stage="end_refine", window=[round(window_start, 3),
+                                             round(window_end, 3)],
+                error=str(exc)))
+            refined.append(refine_candidate_end(candidate, [], [], config))
+            continue
+        end_decoded_seconds += window_end - window_start
+        item = refine_candidate_end(candidate, dense, audio_impacts, config)
+        refined_count += bool(item["refinedEnd"])
+        refined.append(item)
+    candidates = refined
     return dict(
-        version=2, method=METHOD, source=os.path.basename(video_path), roi=roi,
+        version=3, method=METHOD, source=os.path.basename(video_path), roi=roi,
         candidates=candidates,
         diagnostics=dict(
             analyzedFrom=round(start, 3), analyzedTo=round(analyzed_end, 3),
             sampleFps=config.sample_fps,
+            rescueSampleFps=config.rescue_fps,
+            endRefineSampleFps=config.end_refine_fps,
             analysisSize=[config.analysis_width, config.analysis_height],
             **motion_diagnostics, audio=audio_diagnostics,
-            note=("候選由 ROI 視覺動態產生；長候選只在持續低動作及視覺重新啟動時切分。"
-                  "音訊只降低切分信心，不能單獨建立回合或一票否決強視覺證據。"),
+            rescueWindows=len(rescue_windows), rescuedCandidates=len(rescued),
+            refinedEndCandidates=refined_count,
+            endRefineEligibleCandidates=len(priorities),
+            endRefineWindows=len(selected_end_indices),
+            rescueDecodedSeconds=round(rescue_decoded_seconds, 3),
+            endRefineDecodedSeconds=round(end_decoded_seconds, 3),
+            localDecodeFailures=local_decode_failures,
+            note=("主要候選仍由 2 fps ROI 視覺動態產生；只有音訊群集加上雙側粗略動作"
+                  "支持的短視窗才進行局部高 fps rescue。候選終點可由局部高 fps 動作下降"
+                  "及音訊安靜共同縮短；既有候選起點不變。"),
         ),
     )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Rally Detection v0.2：ROI 視覺候選；音訊只作輔助，不判斷得分者。")
+        description="Rally Detection v3.0-A：2 fps ROI 粗掃與局部高 fps 修正。")
     parser.add_argument("video")
     parser.add_argument("--roi", required=True, help="x,y,w,h；皆為 0–1 比例")
     parser.add_argument("--ffmpeg", default="ffmpeg")
@@ -656,7 +1065,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    print(f"Rally Detection v0.2.2 · {result['source']}")
+    print(f"Rally Detection v3.0-A · {result['source']}")
     print("候選由 ROI 影像產生；音訊只作輔助。人工確認前不會建立事件。\n")
     for i, item in enumerate(result["candidates"], 1):
         print(f"{i:3d}  {item['start']:8.2f} → {item['end']:8.2f}  "
@@ -695,7 +1104,10 @@ def main(argv=None):
           f"佐證保留 {diagnostics['audioPromotedCandidates']}，"
           f"前後修剪 {diagnostics['audioTrimmedCandidates']}，"
           f"短走動排除 {diagnostics['rejectedBriefCandidates']}，"
-          f"motion valley 切分 {diagnostics['motionValleySplits']}。")
+          f"motion valley 切分 {diagnostics['motionValleySplits']}，"
+          f"局部 rescue {diagnostics['rescuedCandidates']}/"
+          f"{diagnostics['rescueWindows']}，"
+          f"終點修正 {diagnostics['refinedEndCandidates']}。")
 
 
 if __name__ == "__main__":
