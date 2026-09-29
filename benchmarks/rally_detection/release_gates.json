@@ -1,0 +1,13 @@
+{
+  "aggregated_short_recall_min": 0.6,
+  "benchmark_02_03_pre_post_nuisance_max": 20,
+  "macro_f1_improvement_points": 3.0,
+  "macro_recall_improvement_points": 4.0,
+  "micro_f1_improvement_points": 3.0,
+  "micro_recall_improvement_points": 4.0,
+  "official_unmatched_total_max": 55,
+  "per_match_recall_regression_max_points": 2.5,
+  "total_merges_max": 5,
+  "total_tp_improvement": 6,
+  "weighted_realtime_factor_max": 0.32
+}

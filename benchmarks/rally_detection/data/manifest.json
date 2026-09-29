@@ -1,0 +1,784 @@
+{
+  "benchmarks": [
+    {
+      "benchmark_id": "benchmark_01",
+      "fps": 59.94,
+      "ground_truth": [
+        {
+          "end": 15.299,
+          "index": 1,
+          "start": 11.795
+        },
+        {
+          "end": 26.994,
+          "index": 2,
+          "start": 23.807
+        },
+        {
+          "end": 39.339,
+          "index": 3,
+          "start": 34.301
+        },
+        {
+          "end": 46.28,
+          "index": 4,
+          "start": 43.293
+        },
+        {
+          "end": 55.055,
+          "index": 5,
+          "start": 51.802
+        },
+        {
+          "end": 74.658,
+          "index": 6,
+          "start": 63.08
+        },
+        {
+          "end": 85.702,
+          "index": 7,
+          "start": 83.3
+        },
+        {
+          "end": 92.643,
+          "index": 8,
+          "start": 91.074
+        },
+        {
+          "end": 107.024,
+          "index": 9,
+          "start": 103.67
+        },
+        {
+          "end": 116.9,
+          "index": 10,
+          "start": 113.297
+        },
+        {
+          "end": 127.661,
+          "index": 11,
+          "start": 123.49
+        },
+        {
+          "end": 138.338,
+          "index": 12,
+          "start": 136.753
+        },
+        {
+          "end": 149.066,
+          "index": 13,
+          "start": 145.295
+        },
+        {
+          "end": 160.944,
+          "index": 14,
+          "start": 155.656
+        },
+        {
+          "end": 172.673,
+          "index": 15,
+          "start": 170.304
+        },
+        {
+          "end": 182.499,
+          "index": 16,
+          "start": 179.296
+        },
+        {
+          "end": 191.508,
+          "index": 17,
+          "start": 189.306
+        },
+        {
+          "end": 221.605,
+          "index": 18,
+          "start": 220.737
+        },
+        {
+          "end": 231.431,
+          "index": 19,
+          "start": 229.897
+        },
+        {
+          "end": 238.305,
+          "index": 20,
+          "start": 236.737
+        },
+        {
+          "end": 244.845,
+          "index": 21,
+          "start": 243.21
+        },
+        {
+          "end": 256.006,
+          "index": 22,
+          "start": 251.001
+        },
+        {
+          "end": 274.558,
+          "index": 23,
+          "start": 270.22
+        },
+        {
+          "end": 284.034,
+          "index": 24,
+          "start": 281.064
+        },
+        {
+          "end": 298.949,
+          "index": 25,
+          "start": 290.741
+        },
+        {
+          "end": 309.693,
+          "index": 26,
+          "start": 307.307
+        },
+        {
+          "end": 319.987,
+          "index": 27,
+          "start": 318.302
+        },
+        {
+          "end": 326.944,
+          "index": 28,
+          "start": 325.792
+        },
+        {
+          "end": 335.235,
+          "index": 29,
+          "start": 332.049
+        },
+        {
+          "end": 346.513,
+          "index": 30,
+          "start": 343.71
+        },
+        {
+          "end": 355.589,
+          "index": 31,
+          "start": 352.803
+        },
+        {
+          "end": 371.305,
+          "index": 32,
+          "start": 362.296
+        },
+        {
+          "end": 383.417,
+          "index": 33,
+          "start": 381.899
+        },
+        {
+          "end": 391.825,
+          "index": 34,
+          "start": 388.105
+        },
+        {
+          "end": 404.855,
+          "index": 35,
+          "start": 400.584
+        },
+        {
+          "end": 415.015,
+          "index": 36,
+          "start": 411.962
+        },
+        {
+          "end": 435.602,
+          "index": 37,
+          "start": 432.299
+        },
+        {
+          "end": 452.603,
+          "index": 38,
+          "start": 449.299
+        },
+        {
+          "end": 464.631,
+          "index": 39,
+          "start": 460.944
+        },
+        {
+          "end": 477.427,
+          "index": 40,
+          "start": 471.305
+        },
+        {
+          "end": 492.059,
+          "index": 41,
+          "start": 482.799
+        },
+        {
+          "end": 503.687,
+          "index": 42,
+          "start": 497.798
+        },
+        {
+          "end": 514.965,
+          "index": 43,
+          "start": 513.797
+        },
+        {
+          "end": 525.442,
+          "index": 44,
+          "start": 523.59
+        },
+        {
+          "end": 544.194,
+          "index": 45,
+          "start": 532.299
+        },
+        {
+          "end": 561.795,
+          "index": 46,
+          "start": 551.952
+        },
+        {
+          "end": 572.289,
+          "index": 47,
+          "start": 564.798
+        },
+        {
+          "end": 589.59,
+          "index": 48,
+          "start": 579.947
+        },
+        {
+          "end": 605.822,
+          "index": 49,
+          "start": 598.298
+        },
+        {
+          "end": 612.629,
+          "index": 50,
+          "start": 610.794
+        },
+        {
+          "end": 621.221,
+          "index": 51,
+          "start": 616.8
+        },
+        {
+          "end": 631.732,
+          "index": 52,
+          "start": 630.097
+        },
+        {
+          "end": 642.643,
+          "index": 53,
+          "start": 639.339
+        },
+        {
+          "end": 653.887,
+          "index": 54,
+          "start": 649.299
+        }
+      ],
+      "nuisance_windows": null,
+      "official_evaluation_window": {
+        "end": 660.48,
+        "start": 0.0
+      },
+      "source_basename": "DJI_20260920091215_0070_D.MP4",
+      "source_duration_seconds": 660.48
+    },
+    {
+      "benchmark_id": "benchmark_02",
+      "fps": 59.94,
+      "ground_truth": [
+        {
+          "end": 153.237,
+          "index": 1,
+          "start": 150.801
+        },
+        {
+          "end": 161.278,
+          "index": 2,
+          "start": 159.326
+        },
+        {
+          "end": 181.031,
+          "index": 3,
+          "start": 176.793
+        },
+        {
+          "end": 190.741,
+          "index": 4,
+          "start": 187.387
+        },
+        {
+          "end": 199.049,
+          "index": 5,
+          "start": 197.314
+        },
+        {
+          "end": 205.355,
+          "index": 6,
+          "start": 201.802
+        },
+        {
+          "end": 213.48,
+          "index": 7,
+          "start": 210.077
+        },
+        {
+          "end": 223.79,
+          "index": 8,
+          "start": 219.303
+        },
+        {
+          "end": 235.669,
+          "index": 9,
+          "start": 231.798
+        },
+        {
+          "end": 250.651,
+          "index": 10,
+          "start": 248.298
+        },
+        {
+          "end": 261.895,
+          "index": 11,
+          "start": 256.306
+        },
+        {
+          "end": 276.193,
+          "index": 12,
+          "start": 270.804
+        },
+        {
+          "end": 285.302,
+          "index": 13,
+          "start": 283.3
+        },
+        {
+          "end": 351.285,
+          "index": 14,
+          "start": 343.293
+        },
+        {
+          "end": 364.681,
+          "index": 15,
+          "start": 362.296
+        },
+        {
+          "end": 380.214,
+          "index": 16,
+          "start": 377.077
+        },
+        {
+          "end": 392.609,
+          "index": 17,
+          "start": 390.807
+        },
+        {
+          "end": 399.249,
+          "index": 18,
+          "start": 396.43
+        },
+        {
+          "end": 414.715,
+          "index": 19,
+          "start": 409.793
+        },
+        {
+          "end": 426.143,
+          "index": 20,
+          "start": 423.807
+        },
+        {
+          "end": 441.091,
+          "index": 21,
+          "start": 439.306
+        },
+        {
+          "end": 457.624,
+          "index": 22,
+          "start": 454.805
+        },
+        {
+          "end": 471.371,
+          "index": 23,
+          "start": 466.8
+        },
+        {
+          "end": 483.684,
+          "index": 24,
+          "start": 481.298
+        },
+        {
+          "end": 492.025,
+          "index": 25,
+          "start": 488.305
+        },
+        {
+          "end": 504.104,
+          "index": 26,
+          "start": 500.801
+        },
+        {
+          "end": 512.029,
+          "index": 27,
+          "start": 509.793
+        },
+        {
+          "end": 525.459,
+          "index": 28,
+          "start": 522.306
+        },
+        {
+          "end": 535.886,
+          "index": 29,
+          "start": 533.3
+        },
+        {
+          "end": 547.414,
+          "index": 30,
+          "start": 543.293
+        },
+        {
+          "end": 558.609,
+          "index": 31,
+          "start": 556.44
+        },
+        {
+          "end": 634.401,
+          "index": 32,
+          "start": 631.798
+        },
+        {
+          "end": 647.047,
+          "index": 33,
+          "start": 644.795
+        },
+        {
+          "end": 657.391,
+          "index": 34,
+          "start": 651.802
+        },
+        {
+          "end": 666.149,
+          "index": 35,
+          "start": 658.792
+        },
+        {
+          "end": 675.475,
+          "index": 36,
+          "start": 672.806
+        },
+        {
+          "end": 687.404,
+          "index": 37,
+          "start": 683.3
+        },
+        {
+          "end": 702.753,
+          "index": 38,
+          "start": 693.293
+        },
+        {
+          "end": 709.092,
+          "index": 39,
+          "start": 705.689
+        },
+        {
+          "end": 718.035,
+          "index": 40,
+          "start": 715.799
+        },
+        {
+          "end": 728.362,
+          "index": 41,
+          "start": 726.293
+        },
+        {
+          "end": 738.055,
+          "index": 42,
+          "start": 734.301
+        },
+        {
+          "end": 746.163,
+          "index": 43,
+          "start": 744.545
+        },
+        {
+          "end": 766.216,
+          "index": 44,
+          "start": 754.805
+        },
+        {
+          "end": 779.146,
+          "index": 45,
+          "start": 772.806
+        },
+        {
+          "end": 789.84,
+          "index": 46,
+          "start": 783.3
+        },
+        {
+          "end": 798.916,
+          "index": 47,
+          "start": 795.295
+        },
+        {
+          "end": 813.046,
+          "index": 48,
+          "start": 811.211
+        }
+      ],
+      "nuisance_windows": {
+        "post_match": {
+          "end": 830.976,
+          "start": 813.046
+        },
+        "pre_match": {
+          "end": 150.801,
+          "start": 0.0
+        }
+      },
+      "official_evaluation_window": {
+        "end": 813.046,
+        "start": 150.801
+      },
+      "source_basename": "DJI_20260815114749_0005_D.MP4",
+      "source_duration_seconds": 830.976
+    },
+    {
+      "benchmark_id": "benchmark_03",
+      "fps": 59.94,
+      "ground_truth": [
+        {
+          "end": 43.894,
+          "index": 1,
+          "start": 39.306
+        },
+        {
+          "end": 49.766,
+          "index": 2,
+          "start": 48.298
+        },
+        {
+          "end": 58.575,
+          "index": 3,
+          "start": 56.807
+        },
+        {
+          "end": 65.199,
+          "index": 4,
+          "start": 63.764
+        },
+        {
+          "end": 74.208,
+          "index": 5,
+          "start": 70.804
+        },
+        {
+          "end": 80.03,
+          "index": 6,
+          "start": 76.293
+        },
+        {
+          "end": 90.741,
+          "index": 7,
+          "start": 84.301
+        },
+        {
+          "end": 110.827,
+          "index": 8,
+          "start": 108.642
+        },
+        {
+          "end": 118.752,
+          "index": 9,
+          "start": 114.798
+        },
+        {
+          "end": 123.774,
+          "index": 10,
+          "start": 119.803
+        },
+        {
+          "end": 141.525,
+          "index": 11,
+          "start": 132.299
+        },
+        {
+          "end": 153.103,
+          "index": 12,
+          "start": 150.884
+        },
+        {
+          "end": 168.051,
+          "index": 13,
+          "start": 160.794
+        },
+        {
+          "end": 193.977,
+          "index": 14,
+          "start": 191.792
+        },
+        {
+          "end": 206.139,
+          "index": 15,
+          "start": 204.438
+        },
+        {
+          "end": 211.812,
+          "index": 16,
+          "start": 209.293
+        },
+        {
+          "end": 250.334,
+          "index": 17,
+          "start": 243.794
+        },
+        {
+          "end": 261.595,
+          "index": 18,
+          "start": 259.576
+        },
+        {
+          "end": 268.335,
+          "index": 19,
+          "start": 264.798
+        },
+        {
+          "end": 283.283,
+          "index": 20,
+          "start": 279.296
+        },
+        {
+          "end": 290.958,
+          "index": 21,
+          "start": 286.303
+        },
+        {
+          "end": 306.306,
+          "index": 22,
+          "start": 297.297
+        },
+        {
+          "end": 317.668,
+          "index": 23,
+          "start": 315.482
+        },
+        {
+          "end": 340.507,
+          "index": 24,
+          "start": 334.301
+        },
+        {
+          "end": 376.91,
+          "index": 25,
+          "start": 375.576
+        },
+        {
+          "end": 388.739,
+          "index": 26,
+          "start": 386.887
+        },
+        {
+          "end": 398.432,
+          "index": 27,
+          "start": 396.413
+        },
+        {
+          "end": 425.275,
+          "index": 28,
+          "start": 416.3
+        },
+        {
+          "end": 440.991,
+          "index": 29,
+          "start": 429.796
+        },
+        {
+          "end": 445.796,
+          "index": 30,
+          "start": 441.792
+        },
+        {
+          "end": 452.319,
+          "index": 31,
+          "start": 449.183
+        },
+        {
+          "end": 464.848,
+          "index": 32,
+          "start": 456.306
+        },
+        {
+          "end": 475.709,
+          "index": 33,
+          "start": 473.44
+        },
+        {
+          "end": 481.114,
+          "index": 34,
+          "start": 476.793
+        },
+        {
+          "end": 488.021,
+          "index": 35,
+          "start": 482.299
+        },
+        {
+          "end": 504.121,
+          "index": 36,
+          "start": 492.292
+        },
+        {
+          "end": 524.057,
+          "index": 37,
+          "start": 522.523
+        },
+        {
+          "end": 531.198,
+          "index": 38,
+          "start": 529.63
+        },
+        {
+          "end": 535.586,
+          "index": 39,
+          "start": 532.299
+        },
+        {
+          "end": 546.496,
+          "index": 40,
+          "start": 543.71
+        }
+      ],
+      "nuisance_windows": {
+        "post_match": {
+          "end": 554.709333,
+          "start": 546.496
+        },
+        "pre_match": {
+          "end": 39.306,
+          "start": 0.0
+        }
+      },
+      "official_evaluation_window": {
+        "end": 546.496,
+        "start": 39.306
+      },
+      "source_basename": "DJI_20260816183223_0015_D.MP4",
+      "source_duration_seconds": 554.709333
+    }
+  ],
+  "methodology": {
+    "duration_buckets": {
+      "long": ">=7s",
+      "medium": ">2s and <7s",
+      "short": "<=2s"
+    },
+    "matching": "one-to-one bipartite matching maximizing TP count, then total overlap",
+    "near_miss": "no primary-qualified edge and edge-to-edge gap <= 2.0 seconds",
+    "official_precision": "predictions with positive overlap with the official evaluation window",
+    "primary_match": "overlap >= 0.5 seconds OR overlap >= 25% of the shorter interval"
+  },
+  "schema_version": 1,
+  "suite": "koko_rally_detection_v3"
+}
