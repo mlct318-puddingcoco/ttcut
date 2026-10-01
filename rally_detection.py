@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rally Detection v3.0-A: coarse ROI motion with local dense refinement.
+"""Rally Detection v3.0-A2: coarse ROI motion with local dense refinement.
 
 The detector is intentionally conservative about side effects: it only returns
 review candidates.  It never creates ttcut events and never decides a winner.
@@ -14,11 +14,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from array import array
 from dataclasses import dataclass
 
 
-METHOD = "roi-motion-audio-local-rescue-v3.0-a"
+METHOD = "roi-motion-audio-local-rescue-v3.0-a2"
 
 
 @dataclass(frozen=True)
@@ -67,10 +68,15 @@ class DetectorConfig:
     rescue_fps: float = 8.0
     rescue_audio_cluster_gap_seconds: float = 0.65
     rescue_min_audio_hits: int = 3
+    rescue_audio_pair_max_gap_seconds: float = 0.95
     rescue_max_audio_span_seconds: float = 2.6
     rescue_window_padding_seconds: float = 0.75
+    rescue_alt_post_padding_seconds: float = 1.25
     rescue_coarse_motion_ratio: float = 0.62
     rescue_min_side_balance: float = 0.18
+    rescue_alt_min_audio_hits: int = 5
+    rescue_alt_max_audio_span_seconds: float = 1.8
+    rescue_alt_min_coarse_side_balance: float = 0.08
     rescue_min_visual_seconds: float = 0.45
     rescue_min_strong_seconds: float = 0.65
     rescue_long_peak_ratio: float = 1.60
@@ -79,6 +85,15 @@ class DetectorConfig:
     rescue_post_roll_seconds: float = 0.20
     rescue_overlap_guard_seconds: float = 0.35
     rescue_adjacent_guard_seconds: float = 1.2
+    rescue_visual_gap_seconds: float = 0.20
+    # A2's anti-merge exception is deliberately much narrower than the full
+    # temporal-state work planned for v3.0-B. It only promotes a long-group
+    # valley when it is sustained, audio-quiet, and followed by an unusually
+    # strong visual restart.
+    split_anti_merge_min_group_seconds: float = 12.0
+    split_anti_merge_min_valley_seconds: float = 1.5
+    split_anti_merge_valley_peak_ratio: float = 0.75
+    split_anti_merge_restart_ratio: float = 3.0
     end_refine_fps: float = 8.0
     end_refine_lookback_seconds: float = 3.5
     end_refine_lookahead_seconds: float = 0.65
@@ -364,7 +379,8 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
                      motionValleyDuration=round(duration, 2),
                      audioHits=hits, valleyDepth=None,
                      visualConfidence=None, audioPenalty=0.0,
-                     splitConfidence=None, decision="keep", reason="")
+                     splitConfidence=None, antiMergeGuard=False,
+                     decision="keep", reason="")
         checks.append(check)
         if not before or not after:
             check["reason"] = "edge_valley"
@@ -396,18 +412,35 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
         if min(left_span, right_span) < config.split_min_side_seconds:
             check["reason"] = "short_side"
             continue
-        if score > min(left_peak, right_peak) * config.split_valley_peak_ratio:
+        anti_merge_guard = (
+            span >= config.split_anti_merge_min_group_seconds
+            and duration >= config.split_anti_merge_min_valley_seconds
+            and hits == 0
+            and score <= flank_peak * config.split_anti_merge_valley_peak_ratio
+            and min(left_peak, right_peak) >= threshold
+            and max(left_peak, right_peak)
+            >= threshold * config.split_anti_merge_restart_ratio
+        )
+        check["antiMergeGuard"] = anti_merge_guard
+        if (score > min(left_peak, right_peak) * config.split_valley_peak_ratio
+                and not anti_merge_guard):
             check["reason"] = "shallow_valley"
             continue
-        if (right_peak < threshold * config.split_restart_peak_ratio
-                or sum(smoothed[i] >= threshold for i in after[:nearby]) < 2):
+        restart_ratio = (1.0 if anti_merge_guard
+                         else config.split_restart_peak_ratio)
+        minimum_flank_frames = 1 if anti_merge_guard else 2
+        if (right_peak < threshold * restart_ratio
+                or sum(smoothed[i] >= threshold for i in after[:nearby])
+                < minimum_flank_frames):
             check["reason"] = "no_visual_restart"
             continue
-        if (left_peak < threshold * config.split_restart_peak_ratio
-                or sum(smoothed[i] >= threshold for i in before[-nearby:]) < 2):
+        if (left_peak < threshold * restart_ratio
+                or sum(smoothed[i] >= threshold for i in before[-nearby:])
+                < minimum_flank_frames):
             check["reason"] = "weak_visual_before"
             continue
-        if split_confidence < config.split_confidence_threshold:
+        if (split_confidence < config.split_confidence_threshold
+                and not anti_merge_guard):
             check["reason"] = "low_split_confidence"
             continue
         viable.append((first, last, check))
@@ -455,7 +488,11 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
             continue
         accepted = proposed
         check["decision"] = "split"
-        check["reason"] = "sustained_motion_valley_visual_restart"
+        check["reason"] = (
+            "long_candidate_clear_gap_visual_restart"
+            if check.get("antiMergeGuard")
+            else "sustained_motion_valley_visual_restart"
+        )
 
     if not accepted:
         return [(group, None)], checks
@@ -616,6 +653,9 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
             splitVisualConfidence=split_check.get("visualConfidence"),
             splitAudioPenalty=split_check.get("audioPenalty", 0.0),
             splitConfidence=split_check.get("splitConfidence"),
+            antiMergeGuardApplied=bool(split_check.get("antiMergeGuard")),
+            antiMergeBasis=(split_check.get("reason")
+                            if split_check.get("antiMergeGuard") else None),
             splitDecision=split_check["decision"],
             splitReason=split_check["reason"], splitChecks=split_checks,
         ))
@@ -656,16 +696,18 @@ def _audio_clusters(audio_impacts, max_gap):
 
 
 def propose_rescue_windows(metrics, audio_impacts, candidates, config=None,
-                           duration=None):
-    """Return short local-rescan windows backed by audio and coarse motion.
+                           duration=None, include_diagnostics=False):
+    """Return short local-rescan windows backed by cheap audio/motion evidence.
 
-    Audio is allowed to propose a window, but not a rally. A proposal must also
-    contain bilateral coarse ROI motion and must not overlap an existing coarse
-    candidate. The dense pass applies the final visual gate.
+    A2 retains the original three-hit bilateral trigger and adds two narrow
+    alternatives: a separated two-hit pair with clearly bilateral coarse
+    motion, and a compact strong cluster whose coarse frame is only slightly
+    one-sided. Both alternatives still require the existing dense visual gate.
     """
     config = config or DetectorConfig()
     if not metrics or not audio_impacts:
-        return []
+        empty = {"accepted": 0, "byTrigger": {}, "rejections": {}}
+        return ([], empty) if include_diagnostics else []
     raw = [item["motion"] for item in metrics]
     smoothed = _smooth(raw)
     baseline = percentile(smoothed, config.baseline_percentile)
@@ -676,30 +718,38 @@ def propose_rescue_windows(metrics, audio_impacts, candidates, config=None,
     frame_seconds = 1 / config.sample_fps
     stop = duration if duration is not None else metrics[-1]["t"] + frame_seconds
     windows = []
-    for cluster in _audio_clusters(
-            audio_impacts, config.rescue_audio_cluster_gap_seconds):
-        if len(cluster) < config.rescue_min_audio_hits:
-            continue
-        audio_span = cluster[-1] - cluster[0]
-        if audio_span > config.rescue_max_audio_span_seconds:
-            continue
+    rejection_counts = {}
+
+    def reject(reason):
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
+    def evidence(cluster, trigger, minimum_balance, minimum_dense_hits,
+                 relaxed_adjacency=False, post_padding=None):
         core_start = max(0.0, cluster[0] - .12)
         core_end = min(stop, cluster[-1] + .12)
         start = max(0.0, core_start - config.rescue_window_padding_seconds)
-        end = min(stop, core_end + config.rescue_window_padding_seconds)
-        if any(
-            _interval_overlap(start, end, item["start"], item["end"])
-            >= config.rescue_overlap_guard_seconds
-            or _interval_gap(core_start, core_end, item["start"], item["end"])
-            <= config.rescue_adjacent_guard_seconds
-            for item in candidates
-        ):
-            continue
+        end = min(stop, core_end + (
+            config.rescue_window_padding_seconds
+            if post_padding is None else post_padding))
+        nearby_candidates = []
+        for item in candidates:
+            overlap = _interval_overlap(start, end, item["start"], item["end"])
+            gap = _interval_gap(core_start, core_end, item["start"], item["end"])
+            blocked = (overlap >= config.rescue_overlap_guard_seconds
+                       or gap <= (config.rescue_visual_gap_seconds
+                                  if relaxed_adjacency
+                                  else config.rescue_adjacent_guard_seconds))
+            if blocked:
+                nearby_candidates.append(item)
+        if nearby_candidates:
+            reject("existing_candidate_guard")
+            return
         nearby = [i for i, item in enumerate(metrics)
                   if start - frame_seconds <= item["t"] <= end + frame_seconds]
         elevated = [i for i in nearby if smoothed[i] >= proposal_floor]
         if not elevated:
-            continue
+            reject("coarse_motion_below_floor")
+            return
         # Smoothing spreads one burst into adjacent quiet frames. Use the raw
         # peak for the bilateral check so an idle neighbour cannot make a
         # one-sided walk look balanced.
@@ -707,19 +757,77 @@ def propose_rescue_windows(metrics, audio_impacts, candidates, config=None,
         side_balance = (min(metrics[strongest]["left"], metrics[strongest]["right"])
                         / max(.001, metrics[strongest]["left"],
                               metrics[strongest]["right"]))
-        if side_balance < config.rescue_min_side_balance * .65:
-            continue
+        if side_balance < minimum_balance:
+            reject("coarse_side_balance")
+            return
         windows.append(dict(
             start=round(start, 3), end=round(end, 3),
             coreStart=round(core_start, 3), coreEnd=round(core_end, 3),
             audioHits=len(cluster), coarseMotionPeak=round(smoothed[strongest], 2),
             coarseMotionRatio=round(smoothed[strongest] / max(.001, proposal_floor), 2),
             coarseSideBalance=round(side_balance, 3),
+            rescueTrigger=trigger, minDenseAudioHits=minimum_dense_hits,
+            audioTimes=list(cluster),
         ))
+
+    clusters = _audio_clusters(
+        audio_impacts, config.rescue_audio_cluster_gap_seconds)
+    for cluster in clusters:
+        if len(cluster) < config.rescue_min_audio_hits:
+            reject("audio_hits_below_standard")
+            continue
+        audio_span = cluster[-1] - cluster[0]
+        if audio_span > config.rescue_max_audio_span_seconds:
+            reject("audio_span_too_long")
+            continue
+        # The standard rule is evaluated first. The compact strong-cluster
+        # alternative relaxes only the cheap coarse balance, never the dense
+        # visual balance required to create a candidate.
+        raw_nearby = [i for i, item in enumerate(metrics)
+                      if cluster[0] - config.rescue_window_padding_seconds
+                      - frame_seconds <= item["t"]
+                      <= cluster[-1] + config.rescue_window_padding_seconds
+                      + frame_seconds]
+        elevated = [i for i in raw_nearby if smoothed[i] >= proposal_floor]
+        balance = None
+        if elevated:
+            strongest = max(elevated, key=lambda i: raw[i])
+            balance = (min(metrics[strongest]["left"], metrics[strongest]["right"])
+                       / max(.001, metrics[strongest]["left"],
+                             metrics[strongest]["right"]))
+        standard_minimum = config.rescue_min_side_balance * .65
+        if balance is not None and balance >= standard_minimum:
+            evidence(cluster, "audio-cluster+bilateral-coarse-motion",
+                     standard_minimum, config.rescue_min_audio_hits)
+        elif (len(cluster) >= config.rescue_alt_min_audio_hits
+              and audio_span <= config.rescue_alt_max_audio_span_seconds):
+            evidence(cluster, "strong-audio+brief-one-sided-coarse-motion",
+                     config.rescue_alt_min_coarse_side_balance,
+                     2,
+                     post_padding=config.rescue_alt_post_padding_seconds)
+        else:
+            reject("coarse_side_balance")
+
+    # Two individually isolated impacts may still describe a very short rally
+    # when their separation only narrowly exceeds the standard cluster gap.
+    # Requiring two singleton clusters and bilateral coarse evidence keeps this
+    # from turning ordinary background audio into dense-decode work.
+    for left, right in zip(clusters, clusters[1:]):
+        if len(left) != 1 or len(right) != 1:
+            continue
+        gap = right[0] - left[0]
+        if not (config.rescue_audio_cluster_gap_seconds < gap
+                <= config.rescue_audio_pair_max_gap_seconds):
+            continue
+        evidence([left[0], right[0]],
+                 "separated-audio-pair+bilateral-coarse-motion",
+                 config.rescue_min_side_balance, 2,
+                 relaxed_adjacency=True)
+
     # Overlapping audio clusters describe one suspicious episode. Keep one
     # dense decode and retain the combined core/evidence.
     merged = []
-    for window in windows:
+    for window in sorted(windows, key=lambda item: (item["start"], item["end"])):
         if not merged or window["start"] > merged[-1]["end"]:
             merged.append(window)
             continue
@@ -727,20 +835,38 @@ def propose_rescue_windows(metrics, audio_impacts, candidates, config=None,
         previous["end"] = max(previous["end"], window["end"])
         previous["coreStart"] = min(previous["coreStart"], window["coreStart"])
         previous["coreEnd"] = max(previous["coreEnd"], window["coreEnd"])
-        previous["audioHits"] += window["audioHits"]
+        previous["audioTimes"] = sorted(set(previous["audioTimes"]
+                                             + window["audioTimes"]))
+        previous["audioHits"] = len(previous["audioTimes"])
+        triggers = set(previous["rescueTrigger"].split("+merged+"))
+        triggers.add(window["rescueTrigger"])
+        previous["rescueTrigger"] = "+merged+".join(sorted(triggers))
+        previous["minDenseAudioHits"] = min(
+            previous["minDenseAudioHits"], window["minDenseAudioHits"])
         if window["coarseMotionPeak"] > previous["coarseMotionPeak"]:
             previous["coarseMotionPeak"] = window["coarseMotionPeak"]
             previous["coarseMotionRatio"] = window["coarseMotionRatio"]
             previous["coarseSideBalance"] = window["coarseSideBalance"]
-    return merged
+    for window in merged:
+        window.pop("audioTimes", None)
+    trigger_counts = {}
+    for window in merged:
+        trigger = window["rescueTrigger"]
+        trigger_counts[trigger] = trigger_counts.get(trigger, 0) + 1
+    diagnostics = dict(accepted=len(merged), byTrigger=trigger_counts,
+                       rejections=rejection_counts)
+    return (merged, diagnostics) if include_diagnostics else merged
 
 
-def analyze_rescue_window(metrics, audio_impacts, proposal, config=None,
-                          duration=None):
-    """Validate one proposed rescue window using dense visual evidence."""
+def analyze_rescue_window_candidates(metrics, audio_impacts, proposal,
+                                     config=None, duration=None,
+                                     include_diagnostics=False):
+    """Validate and keep separate dense bursts inside one rescue window."""
     config = config or DetectorConfig()
     if len(metrics) < 4:
-        return None
+        empty = {"groups": 0, "accepted": 0,
+                 "rejections": {"insufficient_frames": 1}}
+        return ([], empty) if include_diagnostics else []
     raw = [item["motion"] for item in metrics]
     smoothed = _smooth(raw)
     baseline = percentile(smoothed, .25)
@@ -756,34 +882,46 @@ def analyze_rescue_window(metrics, audio_impacts, proposal, config=None,
             groups.append([index])
         else:
             groups[-1].append(index)
-    best = None
-    for group in groups:
+    accepted = []
+    rejection_counts = {}
+
+    def reject(reason):
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+
+    for group_index, group in enumerate(groups):
         first, last = group[0], group[-1]
         visual_start = metrics[first]["t"]
         visual_end = metrics[last]["t"]
         visual_span = visual_end - visual_start + 1 / config.rescue_fps
         if visual_span < config.rescue_min_visual_seconds:
+            reject("visual_span_too_short")
             continue
         if _interval_overlap(visual_start, visual_end + 1 / config.rescue_fps,
                              proposal["coreStart"], proposal["coreEnd"]) <= 0:
+            reject("outside_audio_core")
             continue
         strong = [i for i in group if smoothed[i] >= threshold]
         if len(strong) < max(2, math.ceil(
                 config.rescue_min_strong_seconds * config.rescue_fps)):
+            reject("insufficient_strong_frames")
             continue
         window = metrics[first:last + 1]
         left_mean = sum(item["left"] for item in window) / len(window)
         right_mean = sum(item["right"] for item in window) / len(window)
         side_balance = min(left_mean, right_mean) / max(.001, left_mean, right_mean)
         if side_balance < config.rescue_min_side_balance:
+            reject("dense_side_balance")
             continue
         start = max(0.0, visual_start - config.rescue_pre_roll_seconds)
         stop = duration if duration is not None else metrics[-1]["t"] + 1 / config.rescue_fps
         end = min(stop, visual_end + config.rescue_post_roll_seconds)
         if end - start > config.rescue_max_candidate_seconds:
+            reject("candidate_too_long")
             continue
         hits = [t for t in audio_impacts if start - .08 <= t <= end + .08]
-        if len(hits) < config.rescue_min_audio_hits:
+        if len(hits) < proposal.get("minDenseAudioHits",
+                                    config.rescue_min_audio_hits):
+            reject("dense_audio_hits")
             continue
         pre = smoothed[max(0, first - 4):first]
         post = smoothed[last + 1:min(len(smoothed), last + 5)]
@@ -793,12 +931,14 @@ def analyze_rescue_window(metrics, audio_impacts, proposal, config=None,
         # needs a distinctly stronger local visual peak; otherwise it is more
         # likely to be between-rally walking/reset activity.
         if end - start > 2.0 and peak_threshold_ratio < config.rescue_long_peak_ratio:
+            reject("long_candidate_weak_peak")
             continue
         rise = motion_peak - (sum(pre) / len(pre) if pre else baseline)
         fall = motion_peak - (sum(post) / len(post) if post else baseline)
         # A complete local burst is the main guard against nearby walking or
         # continuous background-table motion.
         if rise < delta * .20 or fall < delta * .20:
+            reject("incomplete_rise_fall")
             continue
         motion_mean = sum(smoothed[first:last + 1]) / (last - first + 1)
         active_ratio = len(group) / max(1, last - first + 1)
@@ -828,18 +968,41 @@ def analyze_rescue_window(metrics, audio_impacts, proposal, config=None,
             splitAudioPenalty=0.0, splitConfidence=None,
             splitDecision="keep", splitReason="short_rescue", splitChecks=[],
             rescueApplied=True,
-            rescueBasis="audio-cluster+bilateral-coarse-motion+dense-motion",
+            rescueBasis=(proposal.get("rescueTrigger",
+                                      "audio-cluster+bilateral-coarse-motion")
+                         + "+dense-motion"),
+            rescueTrigger=proposal.get("rescueTrigger"),
             rescueWindow=[proposal["start"], proposal["end"]],
             rescueAudioHits=len(hits), rescueSampleFps=config.rescue_fps,
             rescueCoarseMotionPeak=proposal.get("coarseMotionPeak"),
             rescueCoarseMotionRatio=proposal.get("coarseMotionRatio"),
             rescueCoarseSideBalance=proposal.get("coarseSideBalance"),
+            rescueValleyGuard=dict(
+                denseGroups=len(groups), groupIndex=group_index,
+                decision=("kept_as_separate_burst" if len(groups) > 1
+                          else "single_dense_burst")),
+            rescueUnionDecision=None,
             refinedEnd=False, originalEnd=round(end, 3), endRefineBasis=None,
         )
-        score = (len(hits), len(strong), side_balance, motion_peak)
-        if best is None or score > best[0]:
-            best = (score, candidate)
-    return best[1] if best else None
+        accepted.append(candidate)
+    candidates = sorted(accepted, key=lambda item: (item["start"], item["end"]))
+    diagnostics = dict(groups=len(groups), accepted=len(candidates),
+                       rejections=rejection_counts,
+                       trigger=proposal.get("rescueTrigger"),
+                       window=[proposal["start"], proposal["end"]])
+    return (candidates, diagnostics) if include_diagnostics else candidates
+
+
+def analyze_rescue_window(metrics, audio_impacts, proposal, config=None,
+                          duration=None):
+    """Backward-compatible single-best rescue-window validator."""
+    candidates = analyze_rescue_window_candidates(
+        metrics, audio_impacts, proposal, config, duration)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (
+        item["audioHits"], item["strongFrames"], item["sideBalance"],
+        item["motionPeak"]))
 
 
 def refine_candidate_end(candidate, metrics, audio_impacts, config=None):
@@ -857,6 +1020,11 @@ def refine_candidate_end(candidate, metrics, audio_impacts, config=None):
     result.setdefault("rescueWindow", None)
     result.setdefault("rescueAudioHits", 0)
     result.setdefault("rescueSampleFps", None)
+    result.setdefault("rescueTrigger", None)
+    result.setdefault("rescueValleyGuard", None)
+    result.setdefault("rescueUnionDecision", None)
+    result.setdefault("antiMergeGuardApplied", False)
+    result.setdefault("antiMergeBasis", None)
     result.update(refinedEnd=False, originalEnd=round(original_end, 3),
                   endRefineBasis=None)
     if len(metrics) < 6:
@@ -910,10 +1078,55 @@ def refine_candidate_end(candidate, metrics, audio_impacts, config=None):
     return result
 
 
-def _candidate_overlaps(candidate, others, minimum):
-    return any(_interval_overlap(candidate["start"], candidate["end"],
-                                 item["start"], item["end"]) >= minimum
-               for item in others)
+def integrate_rescue_candidate(candidate, others, config=None):
+    """Keep a rescue separate unless dense visual continuity says duplicate.
+
+    A2 deliberately does not union rescue and coarse ranges. A small overlap
+    caused only by pre/post-roll is trimmed at the dense visual gap; stronger
+    overlap is treated as a duplicate and rejected.
+    """
+    config = config or DetectorConfig()
+    result = dict(candidate)
+    nearest_gap = None
+    for item in others:
+        overlap = _interval_overlap(result["start"], result["end"],
+                                    item["start"], item["end"])
+        gap = _interval_gap(result["start"], result["end"],
+                            item["start"], item["end"])
+        nearest_gap = gap if nearest_gap is None else min(nearest_gap, gap)
+        if overlap <= 0:
+            continue
+        rescue_visual_start = result.get("visualStart", result["start"])
+        rescue_visual_end = result.get("visualEnd", result["end"])
+        other_visual_start = item.get("visualStart", item["start"])
+        other_visual_end = item.get("visualEnd", item["end"])
+        if rescue_visual_end <= other_visual_start:
+            visual_gap = other_visual_start - rescue_visual_end
+            if visual_gap >= config.rescue_visual_gap_seconds:
+                boundary = (rescue_visual_end + other_visual_start) / 2
+                result["end"] = round(min(result["end"], boundary,
+                                          item["start"]), 3)
+                result["duration"] = round(result["end"] - result["start"], 3)
+                result["rescueUnionDecision"] = "kept_separate_at_dense_valley"
+                continue
+        elif other_visual_end <= rescue_visual_start:
+            visual_gap = rescue_visual_start - other_visual_end
+            if visual_gap >= config.rescue_visual_gap_seconds:
+                boundary = (other_visual_end + rescue_visual_start) / 2
+                result["start"] = round(max(result["start"], boundary,
+                                            item["end"]), 3)
+                result["duration"] = round(result["end"] - result["start"], 3)
+                result["rescueUnionDecision"] = "kept_separate_at_dense_valley"
+                continue
+        return None, "duplicate_overlap_no_continuity"
+    if result.get("rescueUnionDecision") is None:
+        result["rescueUnionDecision"] = (
+            "adjacent_kept_separate_no_union"
+            if nearest_gap is not None
+            and nearest_gap <= config.rescue_adjacent_guard_seconds
+            else "new_local_candidate"
+        )
+    return result, result["rescueUnionDecision"]
 
 
 def _end_refine_priority(candidate, audio_impacts, config):
@@ -943,39 +1156,56 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
         raise DetectionError("找不到 ffmpeg")
     config = config or DetectorConfig()
     roi = validate_roi(roi)
+    total_started = time.perf_counter()
+    stage_started = time.perf_counter()
     metrics = decode_motion(video_path, ffmpeg_path, roi, config, start, end)
+    coarse_decode_seconds = time.perf_counter() - stage_started
+    stage_started = time.perf_counter()
     audio_impacts, audio_diagnostics = decode_audio(
         video_path, ffmpeg_path, config, start, end)
+    audio_decode_seconds = time.perf_counter() - stage_started
     stop = end if end is not None else duration
+    stage_started = time.perf_counter()
     candidates, motion_diagnostics = analyze_motion(
         metrics, audio_impacts, config, stop)
+    coarse_analysis_seconds = time.perf_counter() - stage_started
     analyzed_end = metrics[-1]["t"] + 1 / config.sample_fps
     stop = stop if stop is not None else analyzed_end
 
-    rescue_windows = propose_rescue_windows(
-        metrics, audio_impacts, candidates, config, stop)
+    rescue_windows, rescue_proposal_diagnostics = propose_rescue_windows(
+        metrics, audio_impacts, candidates, config, stop,
+        include_diagnostics=True)
     rescued = []
     local_decode_failures = []
     rescue_decoded_seconds = 0.0
+    rescue_wall_seconds = 0.0
+    rescue_union_rejections = {}
+    rescue_dense_diagnostics = []
     for window in rescue_windows:
         try:
+            stage_started = time.perf_counter()
             dense = decode_motion(
                 video_path, ffmpeg_path, roi, config,
                 window["start"], window["end"],
                 sample_fps=config.rescue_fps, keyframes_only=False)
+            rescue_wall_seconds += time.perf_counter() - stage_started
         except DetectionError as exc:
             local_decode_failures.append(dict(stage="rescue", window=window,
                                               error=str(exc)))
             continue
         rescue_decoded_seconds += window["end"] - window["start"]
-        candidate = analyze_rescue_window(
-            dense, audio_impacts, window, config, stop)
-        if candidate is None:
-            continue
-        if _candidate_overlaps(candidate, candidates + rescued,
-                               config.rescue_overlap_guard_seconds):
-            continue
-        rescued.append(candidate)
+        dense_candidates, dense_diagnostics = analyze_rescue_window_candidates(
+            dense, audio_impacts, window, config, stop,
+            include_diagnostics=True)
+        rescue_dense_diagnostics.append(dense_diagnostics)
+        for candidate in dense_candidates:
+            integrated, decision = integrate_rescue_candidate(
+                candidate, candidates + rescued, config)
+            if integrated is None:
+                rescue_union_rejections[decision] = (
+                    rescue_union_rejections.get(decision, 0) + 1)
+                continue
+            rescued.append(integrated)
     candidates.extend(rescued)
     candidates.sort(key=lambda item: (item["start"], item["end"]))
 
@@ -993,6 +1223,7 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
     refined = []
     refined_count = 0
     end_decoded_seconds = 0.0
+    end_refine_wall_seconds = 0.0
     for candidate_index, candidate in enumerate(candidates):
         if candidate_index not in selected_end_indices:
             refined.append(refine_candidate_end(candidate, [], [], config))
@@ -1005,9 +1236,11 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
             refined.append(refine_candidate_end(candidate, [], [], config))
             continue
         try:
+            stage_started = time.perf_counter()
             dense = decode_motion(
                 video_path, ffmpeg_path, roi, config, window_start, window_end,
                 sample_fps=config.end_refine_fps, keyframes_only=False)
+            end_refine_wall_seconds += time.perf_counter() - stage_started
         except DetectionError as exc:
             local_decode_failures.append(dict(
                 stage="end_refine", window=[round(window_start, 3),
@@ -1020,6 +1253,7 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
         refined_count += bool(item["refinedEnd"])
         refined.append(item)
     candidates = refined
+    total_wall_seconds = time.perf_counter() - total_started
     return dict(
         version=3, method=METHOD, source=os.path.basename(video_path), roi=roi,
         candidates=candidates,
@@ -1031,22 +1265,35 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
             analysisSize=[config.analysis_width, config.analysis_height],
             **motion_diagnostics, audio=audio_diagnostics,
             rescueWindows=len(rescue_windows), rescuedCandidates=len(rescued),
+            rescueProposalDiagnostics=rescue_proposal_diagnostics,
+            rescueProposalWindows=rescue_windows,
+            rescueDenseDiagnostics=rescue_dense_diagnostics,
+            rescueUnionRejections=rescue_union_rejections,
             refinedEndCandidates=refined_count,
             endRefineEligibleCandidates=len(priorities),
             endRefineWindows=len(selected_end_indices),
             rescueDecodedSeconds=round(rescue_decoded_seconds, 3),
             endRefineDecodedSeconds=round(end_decoded_seconds, 3),
+            runtimeBreakdownSeconds=dict(
+                coarseMotionDecode=round(coarse_decode_seconds, 3),
+                audioDecode=round(audio_decode_seconds, 3),
+                coarseAnalysis=round(coarse_analysis_seconds, 3),
+                rescueDenseDecode=round(rescue_wall_seconds, 3),
+                endRefineDenseDecode=round(end_refine_wall_seconds, 3),
+                total=round(total_wall_seconds, 3),
+            ),
             localDecodeFailures=local_decode_failures,
             note=("主要候選仍由 2 fps ROI 視覺動態產生；只有音訊群集加上雙側粗略動作"
-                  "支持的短視窗才進行局部高 fps rescue。候選終點可由局部高 fps 動作下降"
-                  "及音訊安靜共同縮短；既有候選起點不變。"),
+                  "或 A2 的窄幅替代證據支持的短視窗才進行局部高 fps rescue。局部 valley"
+                  "會保持 burst 分離，且不會在缺乏連續性時與既有候選合併。候選終點可由"
+                  "局部高 fps 動作下降及音訊安靜共同縮短；既有候選起點不變。"),
         ),
     )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Rally Detection v3.0-A：2 fps ROI 粗掃與局部高 fps 修正。")
+        description="Rally Detection v3.0-A2：2 fps ROI 粗掃與局部高 fps 修正。")
     parser.add_argument("video")
     parser.add_argument("--roi", required=True, help="x,y,w,h；皆為 0–1 比例")
     parser.add_argument("--ffmpeg", default="ffmpeg")
@@ -1065,7 +1312,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    print(f"Rally Detection v3.0-A · {result['source']}")
+    print(f"Rally Detection v3.0-A2 · {result['source']}")
     print("候選由 ROI 影像產生；音訊只作輔助。人工確認前不會建立事件。\n")
     for i, item in enumerate(result["candidates"], 1):
         print(f"{i:3d}  {item['start']:8.2f} → {item['end']:8.2f}  "

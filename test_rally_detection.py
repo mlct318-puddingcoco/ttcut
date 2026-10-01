@@ -4,8 +4,11 @@ from rally_detection import (
     DetectionError,
     DetectorConfig,
     _motion_between,
+    _split_on_motion_valleys,
     analyze_rescue_window,
+    analyze_rescue_window_candidates,
     analyze_motion,
+    integrate_rescue_candidate,
     percentile,
     propose_rescue_windows,
     refine_candidate_end,
@@ -232,6 +235,25 @@ class MotionTests(unittest.TestCase):
         self.assertTrue(any(check["reason"] == "split_limit"
                             for check in candidates[0]["splitChecks"]))
 
+    def test_long_no_audio_valley_with_strong_restart_uses_anti_merge_guard(self):
+        config = DetectorConfig(min_threshold=5.0)
+        metrics = []
+        raw = [6.0] * 60
+        for index in range(20, 23):
+            raw[index] = 4.2
+        for index in range(23, 29):
+            raw[index] = 20.0
+        for index, motion in enumerate(raw):
+            metrics.append(dict(t=index / 2, motion=motion,
+                                left=motion, right=motion * .9))
+        parts, checks = _split_on_motion_valleys(
+            list(range(60)), metrics, raw, raw, [], 5.0, config)
+        self.assertEqual(len(parts), 2)
+        split = next(check for check in checks if check["decision"] == "split")
+        self.assertTrue(split["antiMergeGuard"])
+        self.assertEqual(split["reason"],
+                         "long_candidate_clear_gap_visual_restart")
+
     def test_one_sided_motion_is_rejected(self):
         metrics = self._metrics([(20, 35)])
         for item in metrics[20:36]:
@@ -263,6 +285,17 @@ class LocalRescueAndEndRefinementTests(unittest.TestCase):
                 right=(.10 if one_sided and on else 4.2 if on else .12)))
         return result
 
+    def _dense_two_bursts(self, start=9.0):
+        result = []
+        for index in range(32):
+            on = index in range(3, 11) or index in range(19, 27)
+            motion = 4.2 if on else .08
+            result.append(dict(
+                t=start + index / 8, motion=motion,
+                left=3.8 if on else .05,
+                right=4.4 if on else .06))
+        return result
+
     def test_sub_two_second_rally_missed_by_coarse_is_rescued_locally(self):
         config = DetectorConfig()
         impacts = [10.05, 10.42, 10.78]
@@ -286,6 +319,58 @@ class LocalRescueAndEndRefinementTests(unittest.TestCase):
         proposal = dict(start=9.25, end=12.0, coreStart=10.0, coreEnd=10.9)
         self.assertIsNone(analyze_rescue_window(
             self._dense_burst(one_sided=True), impacts, proposal, config, 20))
+
+    def test_strong_audio_and_brief_one_sided_coarse_motion_reaches_dense_gate(self):
+        config = DetectorConfig()
+        coarse = self._coarse(active=21)
+        coarse[21]["right"] = .24
+        impacts = [10.0, 10.28, 10.56, 10.84, 11.12]
+        windows = propose_rescue_windows(coarse, impacts, [], config, 20)
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(
+            windows[0]["rescueTrigger"],
+            "strong-audio+brief-one-sided-coarse-motion")
+        candidate = analyze_rescue_window(
+            self._dense_burst(), impacts, windows[0], config, 20)
+        self.assertIsNotNone(candidate)
+        self.assertIn("brief-one-sided", candidate["rescueBasis"])
+
+    def test_isolated_audio_without_visual_evidence_is_rejected(self):
+        impacts = [10.0, 10.28, 10.56, 10.84, 11.12]
+        windows, diagnostics = propose_rescue_windows(
+            self._coarse(), impacts, [], DetectorConfig(), 20,
+            include_diagnostics=True)
+        self.assertEqual(windows, [])
+        self.assertGreater(
+            diagnostics["rejections"].get("coarse_motion_below_floor", 0), 0)
+
+    def test_two_dense_bursts_separated_by_real_valley_remain_separate(self):
+        proposal = dict(
+            start=9.0, end=13.0, coreStart=9.2, coreEnd=12.8,
+            rescueTrigger="audio-cluster+bilateral-coarse-motion",
+            minDenseAudioHits=3)
+        impacts = [9.5, 9.85, 10.15, 11.55, 11.9, 12.2]
+        candidates = analyze_rescue_window_candidates(
+            self._dense_two_bursts(), impacts, proposal,
+            DetectorConfig(), 20)
+        self.assertEqual(len(candidates), 2)
+        self.assertLess(candidates[0]["end"], candidates[1]["start"])
+        self.assertTrue(all(
+            item["rescueValleyGuard"]["decision"]
+            == "kept_as_separate_burst" for item in candidates))
+
+    def test_rescue_does_not_fuse_neighbor_without_visual_continuity(self):
+        rescue = dict(
+            start=9.7, end=11.0, duration=1.3,
+            visualStart=10.2, visualEnd=10.8,
+            rescueUnionDecision=None)
+        existing = [dict(
+            start=8.0, end=10.0, visualStart=8.2, visualEnd=9.4)]
+        integrated, decision = integrate_rescue_candidate(
+            rescue, existing, DetectorConfig())
+        self.assertIsNotNone(integrated)
+        self.assertGreaterEqual(integrated["start"], existing[0]["end"])
+        self.assertEqual(decision, "kept_separate_at_dense_valley")
 
     def test_end_refinement_shortens_overextended_candidate(self):
         config = DetectorConfig()
