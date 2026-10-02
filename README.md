@@ -10,7 +10,7 @@ Koko ttcut runs locally. The application itself does not require an account or u
 
 ## What Koko ttcut does
 
-| Capability | Koko v1.4 workflow |
+| Capability | KOKO TTCUT V1.5 workflow |
 | --- | --- |
 | **Assisted Rally Detection** | Finds candidates from visual activity inside a selected ROI, with audio used as supporting confidence evidence. Detection is a review aid, not an automatic scoring system. |
 | **Rally Review Mode** | Opens candidates in chronological order for fast keyboard confirmation, scoring, skipping, and navigation. |
@@ -25,7 +25,7 @@ Koko ttcut runs locally. The application itself does not require an account or u
 
 The original ttcut workflow centers on direct `S` / `A` / `B` manual tagging. Koko preserves that reliable path and adds assisted candidate detection, human review, multi-file handling, and tournament-level output. It does **not** claim fully automatic or perfect rally detection: the reviewer decides which candidates are real, and the human-entered score is the source of truth.
 
-<!-- Add a verified Koko v1.4 Review Workspace screenshot here when one is available. -->
+<!-- Add a verified KOKO TTCUT V1.5 Review Workspace screenshot here when one is available. -->
 
 ## Quick start
 
@@ -213,7 +213,7 @@ Rendering uses FFmpeg. Kept ranges are selected without first creating a merged 
 
 ## Version and branches
 
-- **Koko v1.4** is the current stable public workflow; detailed maintenance changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+- **KOKO TTCUT V1.5** is the current app version; detailed maintenance changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 - **`koko`** is the stable customized branch and the GitHub default branch.
 - **`main`** is retained as the original/upstream baseline.
 

@@ -7,11 +7,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from app_metadata import (APP_DISPLAY_NAME, APP_NAME, APP_VERSION,
+                          HTTP_SERVER_VERSION, TAG_GENERATOR)
 from intro_card import (NORMAL_INTRO_BASE_SIZE, NORMAL_INTRO_MIN_SIZE, SAMPLE_LINES,
                         intro_ass, intro_has_text, intro_duration, select_font,
                         structured_intro_sizes, thumbnail_command, thumbnail_path,
                         with_intro_filter)
-from ttcut_v2_3 import (Handler, STATE, STATE_LOCK, QUALITY, build_render,
+from ttcut_v2_3 import (HTML, Handler, STATE, STATE_LOCK, QUALITY, build_render,
                         default_out, filter_script, intro_filename,
                         is_preview_disconnect, plan, run_job_managed,
                         safe_filename_part, unique_default_out)
@@ -30,6 +32,32 @@ EXPECTED_NAME = ("北港媽祖盃全國桌球錦標賽_國小男童一年級以�
 
 
 class IntroTests(unittest.TestCase):
+    def test_app_branding_and_generated_metadata_share_one_version_source(self):
+        rendered = (HTML.replace("__APP_DISPLAY_NAME__", APP_DISPLAY_NAME)
+                    .replace("__APP_NAME__", APP_NAME)
+                    .replace("__APP_VERSION__", APP_VERSION)
+                    .replace("__TAG_GENERATOR__", TAG_GENERATOR))
+        self.assertEqual(APP_DISPLAY_NAME, "KOKO TTCUT V1.5")
+        self.assertEqual(TAG_GENERATOR, APP_DISPLAY_NAME)
+        self.assertIn("<title>KOKO TTCUT V1.5 —", rendered)
+        self.assertIn('<div class="brand"><i></i>KOKO TTCUT<small>V1.5</small>',
+                      rendered)
+        self.assertIn('const TAG_GENERATOR = "KOKO TTCUT V1.5";', rendered)
+        self.assertEqual(HTTP_SERVER_VERSION, "KOKO-TTCUT/V1.5")
+        self.assertEqual(Handler.server_version, HTTP_SERVER_VERSION)
+
+    def test_legacy_ttcut_v23_generator_remains_nonsemantic(self):
+        legacy = dict(DOC, version=2, generator="ttcut V2.3")
+        current = dict(DOC, version=2, generator=TAG_GENERATOR)
+        legacy_plan = plan(legacy, {})
+        current_plan = plan(current, {})
+        self.assertEqual({key: value for key, value in legacy_plan.items()
+                          if key != "src2out"},
+                         {key: value for key, value in current_plan.items()
+                          if key != "src2out"})
+        self.assertEqual(legacy_plan["src2out"](1.5),
+                         current_plan["src2out"](1.5))
+
     def test_highlight_field_is_backward_tolerant_in_render_plan(self):
         highlighted = json.loads(json.dumps(DOC))
         highlighted["events"][1]["highlight"] = True

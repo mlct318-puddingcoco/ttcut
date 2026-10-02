@@ -91,8 +91,8 @@ import argparse, json, mimetypes, os, platform, re, shutil, socket
 import subprocess, sys, threading, time, webbrowser
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
-
-VERSION = "V2.3-EN"
+from app_metadata import (APP_DISPLAY_NAME, APP_NAME, APP_VERSION,
+                          HTTP_SERVER_VERSION, TAG_GENERATOR)
 
 IS_MAC = platform.system() == "Darwin"
 IS_WIN = platform.system() == "Windows"
@@ -539,7 +539,7 @@ def build_ass(states, src2out, total, names, width, height,
     fs = S(FS_NUM)
 
     head = f"""[Script Info]
-; ttcut {VERSION}
+; {APP_DISPLAY_NAME}
 ScriptType: v4.00+
 PlayResX: {width}
 PlayResY: {height}
@@ -912,7 +912,7 @@ def build_render(doc, plan_d, video, out, opt, ffmpeg, ffprobe, log=print,
            *video_encoder_args(enc, crf, preset, bitrate, pix_fmt, sw_bitrate),
            *colour_tags, *tag,
            "-c:a", "aac", "-b:a", "256k",
-           "-metadata", f"comment=ttcut {VERSION}",
+           "-metadata", f"comment={APP_DISPLAY_NAME}",
            "-movflags", "+faststart", os.path.basename(out)]
     return cmd, workdir, flt_name
 
@@ -1065,7 +1065,7 @@ def run_job(job, cmd, workdir):
 # ─────────────────────────────────────────── Embedded interface
 
 HTML = r"""<meta charset="utf-8">
-<title>ttcut __VERSION__ — table tennis rally tagging &amp; cutting</title>
+<title>__APP_DISPLAY_NAME__ — table tennis rally tagging &amp; cutting</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root{
@@ -1229,7 +1229,7 @@ HTML = r"""<meta charset="utf-8">
 
 <div class="shell">
   <header>
-    <div class="brand"><i></i>ttcut<small>__VERSION__</small></div>
+    <div class="brand"><i></i>__APP_NAME__<small>__APP_VERSION__</small></div>
     <button class="btn" id="pick">Load video</button>
     <span class="srcname" id="srcname">nothing loaded</span>
     <div class="ctl">A<input type="text" id="nameA" value="Player A"></div>
@@ -1371,7 +1371,7 @@ HTML = r"""<meta charset="utf-8">
 
 <script>
 (() => {
-  const VERSION = "__VERSION__";
+  const TAG_GENERATOR = "__TAG_GENERATOR__";
   const $ = id => document.getElementById(id);
   const screenEl = $('screen'), emptyEl = $('empty');
 
@@ -1407,7 +1407,7 @@ HTML = r"""<meta charset="utf-8">
   function docPayload() {
     const nm = names(), sg = startGames(), sp = startPoints();
     return {
-      version: 2, generator: 'ttcut ' + VERSION, source: srcName, fps: fps(),
+      version: 2, generator: TAG_GENERATOR, source: srcName, fps: fps(),
       pointsPerGame: target(),
       players: {A: nm[0], B: nm[1]},
       firstServer: firstServer() === 0 ? 'A' : 'B',
@@ -1841,7 +1841,7 @@ def guess_type(path):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = f"ttcut/{VERSION}"
+    server_version = HTTP_SERVER_VERSION
 
     def log_message(self, *a):
         pass                                    # do not spam the console with every range request
@@ -1916,7 +1916,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── Index page
     def _html(self):
-        body = HTML.replace("__VERSION__", VERSION).encode("utf-8")
+        body = (HTML.replace("__APP_DISPLAY_NAME__", APP_DISPLAY_NAME)
+                .replace("__APP_NAME__", APP_NAME)
+                .replace("__APP_VERSION__", APP_VERSION)
+                .replace("__TAG_GENERATOR__", TAG_GENERATOR)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -2103,7 +2106,7 @@ def serve(open_browser=True, port=None, ffmpeg_hint=None):
     httpd.daemon_threads = True
     url = f"http://127.0.0.1:{port}/"
 
-    print(f"\nttcut {VERSION}")
+    print(f"\n{APP_DISPLAY_NAME}")
     print(f"UI        {url}")
     print(f"ffmpeg    {ff or 'not found -- tagging and JSON export work, rendering does not'}")
     if not ff:
@@ -2134,7 +2137,7 @@ def cli_render(args):
     pl = plan(doc, opt)
     out = args.out or default_out(args.video)
 
-    print(f"\nttcut {VERSION}")
+    print(f"\n{APP_DISPLAY_NAME}")
     if not pl["ok"]:
         sys.exit(pl["reason"])
     for line in summary_lines(pl, opt, args.video)[:5]:
@@ -2183,9 +2186,9 @@ def main():
             pass
 
     p = argparse.ArgumentParser(
-        description=f"ttcut {VERSION} — table tennis tagging and cutting. "
+        description=f"{APP_DISPLAY_NAME} — table tennis tagging and cutting. "
                     f"With no arguments it opens the interface.")
-    p.add_argument("-v", "--version", action="version", version=f"ttcut {VERSION}")
+    p.add_argument("-v", "--version", action="version", version=APP_DISPLAY_NAME)
     p.add_argument("tags", nargs="?", help="tags JSON (omit to open the interface)")
     p.add_argument("video", nargs="?", help="source video (omit to open the interface)")
     p.add_argument("-o", "--out", default=None)
