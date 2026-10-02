@@ -143,10 +143,12 @@ assert.equal(context.testUI.enterReviewMode(), false, 'empty candidate list refu
 assert.match(node('note').textContent, /沒有候選/);
 const candidate = {start: 151.8, end: 154, duration: 2.2, confidence: .4,
   confidenceTier: 'low', motionMean: 1, motionPeak: 2, sideBalance: 1,
-  strongFrames: 2, supportFrames: 3, audioHits: 0};
+  strongFrames: 2, supportFrames: 3, audioHits: 0, rawConfidence:.65,
+  confidenceBasis:{positive:['sustainedSupport'],cautions:['structuralWeakness']}};
 context.testUI.setCandidates([candidate]);
 assert.match(node('rallyList').innerHTML, /class="rallyrow low"/);
-assert.match(node('rallyList').innerHTML, /class="confidence">低信心 · 40% · 請人工確認/);
+assert.match(node('rallyList').innerHTML, /class="confidence">低證據 · 40\/100 · 請人工確認/);
+assert.match(node('rallyList').innerHTML, /信心依據：持續活動、結構證據弱 · 舊分數 65%/);
 assert.match(node('rallyList').innerHTML, /data-rally-seek="0"/);
 
 const row = {dataset: {rally: '0'}};
@@ -333,7 +335,7 @@ assert.equal(context.testUI.state().reviewStates[2], 'unreviewed',
   'manual serve deletion returns the candidate to reviewable');
 
 context.testUI.selectReviewCandidate(7);
-assert.match(node('reviewConfidence').textContent, /⚠ 低信心候選/);
+assert.match(node('reviewConfidence').textContent, /⚠ 低證據候選/);
 for (const editable of [{tagName:'INPUT'}, {tagName:'TEXTAREA'}, {tagName:'SELECT'},
   {tagName:'DIV',isContentEditable:true}]) {
   const before = context.testUI.events().length, index = context.testUI.state().reviewIndex;

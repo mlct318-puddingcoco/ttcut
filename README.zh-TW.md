@@ -10,7 +10,7 @@ Koko ttcut 完全在本機執行；程式本身不要求帳號，也不需要把
 
 ## Koko ttcut 可以做什麼
 
-| 功能 | Koko v1.4 工作流程 |
+| 功能 | KOKO TTCUT V1.5 工作流程 |
 | --- | --- |
 | **回合候選輔助偵測** | 依選定 ROI 內的視覺活動尋找候選，音訊只作為信心輔助；偵測結果必須由人 Review，不會自動計分。 |
 | **Rally Review Mode** | 依時間順序快速確認候選、計分、跳過與前後巡覽。 |
@@ -25,7 +25,7 @@ Koko ttcut 完全在本機執行；程式本身不要求帳號，也不需要把
 
 原版 ttcut 的核心是直接用 `S`／`A`／`B` 手動標記。Koko 完整保留這條可靠路徑，再加上候選偵測、人工 Review、多段影片與賽事層級輸出。它不是「全自動剪球」或保證零漏球的 AI：候選是否為真正回合由使用者判斷，比分也只以人工輸入為準。
 
-<!-- 日後取得經確認的 Koko v1.4 Review Workspace 截圖時，可放在這裡。 -->
+<!-- 日後取得經確認的 KOKO TTCUT V1.5 Review Workspace 截圖時，可放在這裡。 -->
 
 ## 快速上手
 
@@ -208,7 +208,7 @@ python3 ttcut_v2_3.py match.tags.json match.MOV --dry-run
 
 ## 版本與分支
 
-- **Koko v1.4** 是目前穩定的公開工作流程；細部維護記錄請見 [CHANGELOG.md](CHANGELOG.md)。
+- **KOKO TTCUT V1.5** 是目前的應用程式版本；細部維護記錄請見 [CHANGELOG.md](CHANGELOG.md)。
 - **`koko`** 是穩定自訂分支，也是 GitHub 預設分支。
 - **`main`** 保留為原版／upstream 基線。
 

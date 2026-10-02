@@ -174,13 +174,44 @@ class VirtualTimelineTests(unittest.TestCase):
                              job=None, custom_out=str(Path(tmp) / 'custom.mp4'))
             result = dict(candidates=[dict(start=.2, end=.8, visualStart=.3,
                                            visualEnd=.7, splitPoint=.5,
-                                           splitChecks=[dict(point=.4)])], diagnostics={})
+                                           splitBoundary=.45,
+                                           splitOverlapOriginalEnd=.82,
+                                           originalEnd=.9, endRefinePoint=.65,
+                                           rescueWindow=[.1, 1.0],
+                                           temporalStates=[dict(
+                                               state='active', start=.2, end=.6)],
+                                           splitEvidence=dict(dense=dict(
+                                               boundary=.45, denseBoundary=.5,
+                                               denseValleyStart=.4,
+                                               denseValleyEnd=.55)),
+                                           splitChecks=[dict(
+                                               point=.4,
+                                               temporalStates=[dict(
+                                                   state='ending', start=.3,
+                                                   end=.5)],
+                                               denseSplitEvidence=dict(
+                                                   boundary=.4,
+                                                   denseValleyStart=.35,
+                                                   denseValleyEnd=.5))])],
+                          diagnostics={})
             try:
                 with patch('ttcut_v2_3.detect_video', return_value=result):
                     handler._detect_rallies()
                 candidates = seen[-1][1]['candidates']
                 self.assertEqual([c['start'] for c in candidates], [.2, 2.2])
                 self.assertEqual(candidates[1]['splitChecks'][0]['point'], 2.4)
+                self.assertEqual(candidates[1]['splitBoundary'], 2.45)
+                self.assertEqual(candidates[1]['splitOverlapOriginalEnd'], 2.82)
+                self.assertEqual(candidates[1]['originalEnd'], 2.9)
+                self.assertEqual(candidates[1]['endRefinePoint'], 2.65)
+                self.assertEqual(candidates[1]['rescueWindow'], [2.1, 3.0])
+                self.assertEqual(candidates[1]['temporalStates'][0]['start'], 2.2)
+                self.assertEqual(
+                    candidates[1]['splitChecks'][0]['temporalStates'][0]['end'],
+                    2.5)
+                self.assertEqual(
+                    candidates[1]['splitEvidence']['dense']['denseBoundary'],
+                    2.5)
                 handler._body = lambda: dict(separateRois=True, rois=[dict(x=0,y=0,w=1,h=1)])
                 handler._detect_rallies()
                 self.assertEqual(seen[-1][0], 400)

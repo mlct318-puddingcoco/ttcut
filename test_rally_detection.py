@@ -4,8 +4,16 @@ from rally_detection import (
     DetectionError,
     DetectorConfig,
     _motion_between,
+    _split_on_motion_valleys,
+    analyze_temporal_split_window,
+    analyze_rescue_window,
+    analyze_rescue_window_candidates,
     analyze_motion,
+    calibrate_candidate_confidence,
+    integrate_rescue_candidate,
     percentile,
+    propose_rescue_windows,
+    refine_candidate_end,
     validate_roi,
 )
 
@@ -25,6 +33,69 @@ class RoiTests(unittest.TestCase):
             validate_roi({"x": .2, "y": .2, "w": .02, "h": .5})
         with self.assertRaises(DetectionError):
             validate_roi({"x": .8, "y": .2, "w": .4, "h": .5})
+
+
+class ConfidenceCalibrationTests(unittest.TestCase):
+    def _candidate(self, **changes):
+        candidate = dict(
+            start=12.5, end=17.0, duration=4.5,
+            confidence=.82, supportFrames=9, strongFrames=6,
+            sideBalance=.35, splitApplied=False, rescueApplied=False,
+            shortEvidence=dict(penalty=0.0, penaltyReasons=[],
+                               completePattern=True),
+        )
+        candidate.update(changes)
+        return candidate
+
+    def test_bilateral_complete_evidence_scores_above_background(self):
+        target = calibrate_candidate_confidence(self._candidate())
+        one_sided = calibrate_candidate_confidence(self._candidate(
+            sideBalance=.12))
+        background = calibrate_candidate_confidence(self._candidate(
+            sideBalance=.95))
+        self.assertGreater(target["confidence"], one_sided["confidence"])
+        self.assertGreater(target["confidence"], background["confidence"])
+        self.assertIn("backgroundSymmetryCaution",
+                      background["confidenceBasis"]["cautions"])
+
+    def test_validated_short_rescue_can_score_high(self):
+        rescued = calibrate_candidate_confidence(self._candidate(
+            end=14.1, duration=1.6, supportFrames=12, strongFrames=8,
+            sideBalance=.32, rescueApplied=True, rescueSampleFps=8.0,
+            confidence=.66))
+        self.assertGreaterEqual(rescued["confidence"], .75)
+        self.assertEqual(rescued["confidenceTier"], "high")
+        self.assertIn("validatedRescue",
+                      rescued["confidenceBasis"]["positive"])
+
+    def test_weak_ambiguous_candidate_scores_lower(self):
+        complete = calibrate_candidate_confidence(self._candidate())
+        weak = calibrate_candidate_confidence(self._candidate(
+            supportFrames=3, strongFrames=1, sideBalance=.68,
+            shortEvidence=dict(penalty=.22,
+                               penaltyReasons=["few_strong_frames",
+                                               "incomplete_rise_fall"],
+                               completePattern=False)))
+        self.assertLess(weak["confidence"], complete["confidence"])
+        self.assertEqual(weak["confidenceTier"], "low")
+
+    def test_score_is_bounded_and_deterministic(self):
+        candidate = self._candidate(
+            supportFrames=10000, strongFrames=10000, sideBalance=.35,
+            splitApplied=True, rescueApplied=True, rescueSampleFps=8.0)
+        first = calibrate_candidate_confidence(candidate)
+        second = calibrate_candidate_confidence(candidate)
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(first["confidence"], 0.0)
+        self.assertLessEqual(first["confidence"], 1.0)
+
+    def test_legacy_confidence_is_preserved_without_moving_interval(self):
+        legacy = self._candidate(confidence=.63)
+        calibrated = calibrate_candidate_confidence(legacy)
+        self.assertEqual(calibrated["rawConfidence"], .63)
+        self.assertEqual((calibrated["start"], calibrated["end"]),
+                         (legacy["start"], legacy["end"]))
+        self.assertNotIn("rawConfidence", legacy)
 
 
 class MotionTests(unittest.TestCase):
@@ -229,12 +300,265 @@ class MotionTests(unittest.TestCase):
         self.assertTrue(any(check["reason"] == "split_limit"
                             for check in candidates[0]["splitChecks"]))
 
+    def test_long_no_audio_valley_with_strong_restart_uses_anti_merge_guard(self):
+        config = DetectorConfig(min_threshold=5.0)
+        metrics = []
+        raw = [6.0] * 60
+        for index in range(20, 23):
+            raw[index] = 4.2
+        for index in range(23, 29):
+            raw[index] = 20.0
+        for index, motion in enumerate(raw):
+            metrics.append(dict(t=index / 2, motion=motion,
+                                left=motion, right=motion * .9))
+        parts, checks = _split_on_motion_valleys(
+            list(range(60)), metrics, raw, raw, [], 5.0, config)
+        self.assertEqual(len(parts), 2)
+        split = next(check for check in checks if check["decision"] == "split")
+        self.assertTrue(split["antiMergeGuard"])
+        self.assertEqual(split["reason"],
+                         "long_candidate_clear_gap_visual_restart")
+
+    def test_temporal_state_splits_background_motion_bridge(self):
+        metrics = self._joined_rallies([], valley_motion=7.0)
+        for item in metrics[35:39]:
+            item.update(motion=7.0, left=7.0, right=.05)
+        config = DetectorConfig(split_min_group_seconds=999)
+        candidates, diagnostics = analyze_motion(metrics, [], config, 80)
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(diagnostics["temporalStateSplits"], 1)
+        self.assertTrue(all(item["splitApplied"] for item in candidates))
+        self.assertTrue(all(item["splitBasis"] == "temporal_state_clear_valley"
+                            for item in candidates))
+        self.assertLess(candidates[0]["end"], candidates[1]["start"])
+
+    def test_temporal_state_keeps_brief_pause_inside_one_rally(self):
+        metrics = self._joined_rallies([], valley_motion=7.0)
+        metrics[35].update(motion=7.0, left=7.0, right=.05)
+        candidates, diagnostics = analyze_motion(
+            metrics, [], DetectorConfig(split_min_group_seconds=999), 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(diagnostics["temporalStateSplits"], 0)
+        self.assertFalse(candidates[0]["splitApplied"])
+
+    def test_structural_dense_validation_resolves_ambiguous_valley(self):
+        metrics = self._joined_rallies([(35, 36)], valley_motion=4.0)
+        impacts = [10.5, 17.6, 18.0, 25.0]
+        config = DetectorConfig(min_threshold=5.0)
+        candidates, diagnostics = analyze_motion(metrics, impacts, config, 80)
+        self.assertEqual(len(candidates), 1)
+        request = diagnostics["temporalDenseCheckPoints"][0]
+        evidence = {f"{request['point']:.3f}": dict(
+            passed=True, reason="persistent_dense_valley_bilateral_restart",
+            denseConfidence=.82, denseBoundary=request["point"])}
+        split, _ = analyze_motion(metrics, impacts, config, 80, evidence)
+        self.assertEqual(len(split), 2)
+        self.assertTrue(all(item["splitEvidence"]["dense"]["passed"]
+                            for item in split))
+
+    def test_temporal_state_does_not_create_tiny_edge_fragment(self):
+        metrics = self._joined_rallies([], valley_motion=7.0)
+        for item in metrics[22:25]:
+            item.update(motion=7.0, left=7.0, right=.05)
+        candidates, diagnostics = analyze_motion(
+            metrics, [], DetectorConfig(split_min_group_seconds=999), 80)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(diagnostics["temporalStateSplits"], 0)
+        self.assertTrue(any(check["reason"] in (
+            "fragment_guard", "temporal_state_ambiguous")
+            for check in candidates[0]["splitChecks"]))
+        self.assertEqual(diagnostics["temporalDenseCheckPoints"], [])
+
+    def test_temporal_output_is_deterministic_and_non_overlapping(self):
+        metrics = self._joined_rallies([], valley_motion=7.0)
+        for item in metrics[35:39]:
+            item.update(motion=7.0, left=7.0, right=.05)
+        config = DetectorConfig(split_min_group_seconds=999)
+        first, _ = analyze_motion(metrics, [], config, 80)
+        second, _ = analyze_motion(metrics, [], config, 80)
+        self.assertEqual(first, second)
+        self.assertTrue(all(left["end"] < right["start"]
+                            for left, right in zip(first, first[1:])))
+
     def test_one_sided_motion_is_rejected(self):
         metrics = self._metrics([(20, 35)])
         for item in metrics[20:36]:
             item["right"] = .01
         candidates, _ = analyze_motion(metrics, [], DetectorConfig(), 20)
         self.assertEqual(candidates, [])
+
+
+class LocalRescueAndEndRefinementTests(unittest.TestCase):
+    def _coarse(self, active=None, one_sided=False):
+        result = []
+        for index in range(40):
+            motion = 2.4 if index == active else .15
+            left = motion if index == active else .1
+            right = (.12 if one_sided and index == active else
+                     motion * .9 if index == active else .2)
+            result.append(dict(t=index / 2, motion=motion,
+                               left=left, right=right))
+        return result
+
+    def _dense_burst(self, start=9.25, active=range(6, 15), one_sided=False):
+        result = []
+        for index in range(22):
+            on = index in active
+            motion = 4.0 if on else .12
+            result.append(dict(
+                t=start + index / 8, motion=motion,
+                left=3.6 if on else .1,
+                right=(.10 if one_sided and on else 4.2 if on else .12)))
+        return result
+
+    def _dense_two_bursts(self, start=9.0):
+        result = []
+        for index in range(32):
+            on = index in range(3, 11) or index in range(19, 27)
+            motion = 4.2 if on else .08
+            result.append(dict(
+                t=start + index / 8, motion=motion,
+                left=3.8 if on else .05,
+                right=4.4 if on else .06))
+        return result
+
+    def test_sub_two_second_rally_missed_by_coarse_is_rescued_locally(self):
+        config = DetectorConfig()
+        impacts = [10.05, 10.42, 10.78]
+        windows = propose_rescue_windows(
+            self._coarse(active=21), impacts, [], config, 20)
+        self.assertEqual(len(windows), 1)
+        candidate = analyze_rescue_window(
+            self._dense_burst(), impacts, windows[0], config, 20)
+        self.assertIsNotNone(candidate)
+        self.assertLessEqual(candidate["duration"], 2.0)
+        self.assertTrue(candidate["rescueApplied"])
+        self.assertEqual(candidate["boundaryBasis"],
+                         "local-motion+audio-rescue")
+
+    def test_nearby_background_motion_is_not_a_rescue_candidate(self):
+        config = DetectorConfig()
+        impacts = [10.05, 10.42, 10.78]
+        windows = propose_rescue_windows(
+            self._coarse(active=21, one_sided=True), impacts, [], config, 20)
+        self.assertEqual(windows, [])
+        proposal = dict(start=9.25, end=12.0, coreStart=10.0, coreEnd=10.9)
+        self.assertIsNone(analyze_rescue_window(
+            self._dense_burst(one_sided=True), impacts, proposal, config, 20))
+
+    def test_strong_audio_and_brief_one_sided_coarse_motion_reaches_dense_gate(self):
+        config = DetectorConfig()
+        coarse = self._coarse(active=21)
+        coarse[21]["right"] = .24
+        impacts = [10.0, 10.28, 10.56, 10.84, 11.12]
+        windows = propose_rescue_windows(coarse, impacts, [], config, 20)
+        self.assertEqual(len(windows), 1)
+        self.assertEqual(
+            windows[0]["rescueTrigger"],
+            "strong-audio+brief-one-sided-coarse-motion")
+        candidate = analyze_rescue_window(
+            self._dense_burst(), impacts, windows[0], config, 20)
+        self.assertIsNotNone(candidate)
+        self.assertIn("brief-one-sided", candidate["rescueBasis"])
+
+    def test_isolated_audio_without_visual_evidence_is_rejected(self):
+        impacts = [10.0, 10.28, 10.56, 10.84, 11.12]
+        windows, diagnostics = propose_rescue_windows(
+            self._coarse(), impacts, [], DetectorConfig(), 20,
+            include_diagnostics=True)
+        self.assertEqual(windows, [])
+        self.assertGreater(
+            diagnostics["rejections"].get("coarse_motion_below_floor", 0), 0)
+
+    def test_two_dense_bursts_separated_by_real_valley_remain_separate(self):
+        proposal = dict(
+            start=9.0, end=13.0, coreStart=9.2, coreEnd=12.8,
+            rescueTrigger="audio-cluster+bilateral-coarse-motion",
+            minDenseAudioHits=3)
+        impacts = [9.5, 9.85, 10.15, 11.55, 11.9, 12.2]
+        candidates = analyze_rescue_window_candidates(
+            self._dense_two_bursts(), impacts, proposal,
+            DetectorConfig(), 20)
+        self.assertEqual(len(candidates), 2)
+        self.assertLess(candidates[0]["end"], candidates[1]["start"])
+        self.assertTrue(all(
+            item["rescueValleyGuard"]["decision"]
+            == "kept_as_separate_burst" for item in candidates))
+
+    def test_rescue_does_not_fuse_neighbor_without_visual_continuity(self):
+        rescue = dict(
+            start=9.7, end=11.0, duration=1.3,
+            visualStart=10.2, visualEnd=10.8,
+            rescueUnionDecision=None)
+        existing = [dict(
+            start=8.0, end=10.0, visualStart=8.2, visualEnd=9.4)]
+        integrated, decision = integrate_rescue_candidate(
+            rescue, existing, DetectorConfig())
+        self.assertIsNotNone(integrated)
+        self.assertGreaterEqual(integrated["start"], existing[0]["end"])
+        self.assertEqual(decision, "kept_separate_at_dense_valley")
+
+    def test_rescue_near_state_split_stays_separate(self):
+        coarse = []
+        for index in range(80):
+            on = 16 <= index <= 52
+            motion = 8.0 if on else .15
+            left = 7.0 if on else .1
+            right = 9.0 if on else .2
+            if 32 <= index <= 35:
+                motion, left, right = 7.0, 7.0, .05
+            coarse.append(dict(t=index / 2, motion=motion,
+                               left=left, right=right))
+        existing, _ = analyze_motion(
+            coarse, [], DetectorConfig(split_min_group_seconds=999), 40)
+        self.assertEqual(len(existing), 2)
+        rescue = dict(start=existing[0]["end"], end=existing[1]["start"],
+                      duration=existing[1]["start"] - existing[0]["end"],
+                      visualStart=existing[0]["visualEnd"] + .15,
+                      visualEnd=existing[1]["visualStart"] - .15,
+                      rescueUnionDecision=None)
+        integrated, decision = integrate_rescue_candidate(
+            rescue, existing, DetectorConfig())
+        self.assertIsNotNone(integrated)
+        self.assertIn(decision, ("adjacent_kept_separate_no_union",
+                                 "new_local_candidate"))
+
+    def test_dense_split_requires_valley_and_bilateral_restart(self):
+        dense = self._dense_two_bursts(start=9.0)
+        result = analyze_temporal_split_window(
+            dense, 10.9, [9.5, 10.0, 11.8, 12.1], DetectorConfig())
+        self.assertTrue(result["passed"])
+        self.assertGreaterEqual(result["denseValleyDuration"], .5)
+        bridged = self._dense_burst(start=9.0, active=range(0, 22))
+        kept = analyze_temporal_split_window(
+            bridged, 10.4, [], DetectorConfig())
+        self.assertFalse(kept["passed"])
+
+    def test_end_refinement_shortens_overextended_candidate(self):
+        config = DetectorConfig()
+        candidate = dict(start=10.0, end=15.0, duration=5.0)
+        dense = self._dense_burst(start=11.5, active=range(0, 13))
+        refined = refine_candidate_end(
+            candidate, dense, [12.0, 12.45, 12.88], config)
+        self.assertTrue(refined["refinedEnd"])
+        self.assertLess(refined["end"], candidate["end"])
+        self.assertEqual(refined["endRefineBasis"],
+                         "dense-motion-fall+audio-quiet")
+
+    def test_end_refinement_never_moves_start(self):
+        config = DetectorConfig()
+        candidate = dict(start=10.0, end=15.0, duration=5.0)
+        refined = refine_candidate_end(
+            candidate, self._dense_burst(start=11.5, active=range(0, 13)),
+            [12.0, 12.45, 12.88], config)
+        self.assertEqual(refined["start"], candidate["start"])
+
+    def test_rescue_does_not_duplicate_overlapping_coarse_candidate(self):
+        existing = [dict(start=9.6, end=11.4)]
+        windows = propose_rescue_windows(
+            self._coarse(active=21), [10.05, 10.42, 10.78],
+            existing, DetectorConfig(), 20)
+        self.assertEqual(windows, [])
 
 
 if __name__ == "__main__":
