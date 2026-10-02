@@ -3976,15 +3976,46 @@ class Handler(BaseHTTPRequestHandler):
                 for item in result.get("candidates", []):
                     item = dict(item)
                     for key in ("start", "end", "visualStart", "visualEnd", "splitPoint",
+                                "splitBoundary", "splitOverlapOriginalEnd",
                                 "originalEnd", "endRefinePoint"):
                         if item.get(key) is not None:
                             item[key] = round(item[key] + offset, 3)
                     if item.get("rescueWindow") is not None:
                         item["rescueWindow"] = [round(value + offset, 3)
                                                 for value in item["rescueWindow"]]
-                    item["splitChecks"] = [dict(check, point=round(check["point"] + offset, 3))
-                                           if check.get("point") is not None else check
-                                           for check in item.get("splitChecks", [])]
+                    def offset_dense(evidence):
+                        if not evidence:
+                            return evidence
+                        evidence = dict(evidence)
+                        for key in ("boundary", "denseBoundary", "denseValleyStart",
+                                    "denseValleyEnd"):
+                            if evidence.get(key) is not None:
+                                evidence[key] = round(evidence[key] + offset, 3)
+                        return evidence
+
+                    def offset_states(states):
+                        return [dict(state,
+                                     start=round(state["start"] + offset, 3),
+                                     end=round(state["end"] + offset, 3))
+                                for state in states or []]
+
+                    translated_checks = []
+                    for check in item.get("splitChecks", []):
+                        check = dict(check)
+                        if check.get("point") is not None:
+                            check["point"] = round(check["point"] + offset, 3)
+                        check["temporalStates"] = offset_states(
+                            check.get("temporalStates"))
+                        check["denseSplitEvidence"] = offset_dense(
+                            check.get("denseSplitEvidence"))
+                        translated_checks.append(check)
+                    item["splitChecks"] = translated_checks
+                    item["temporalStates"] = offset_states(
+                        item.get("temporalStates"))
+                    if item.get("splitEvidence"):
+                        item["splitEvidence"] = dict(item["splitEvidence"])
+                        item["splitEvidence"]["dense"] = offset_dense(
+                            item["splitEvidence"].get("dense"))
                     item["segment"] = i
                     candidates.append(item)
                 diagnostics.append(dict(segment=i, source=os.path.basename(source["path"]),

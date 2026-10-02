@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rally Detection v3.0-A2: coarse ROI motion with local dense refinement.
+"""Rally Detection v3.0-B: temporal state and structural merge splitting.
 
 The detector is intentionally conservative about side effects: it only returns
 review candidates.  It never creates ttcut events and never decides a winner.
@@ -19,7 +19,7 @@ from array import array
 from dataclasses import dataclass
 
 
-METHOD = "roi-motion-audio-local-rescue-v3.0-a2"
+METHOD = "roi-motion-audio-temporal-state-v3.0-b"
 
 
 @dataclass(frozen=True)
@@ -94,6 +94,24 @@ class DetectorConfig:
     split_anti_merge_min_valley_seconds: float = 1.5
     split_anti_merge_valley_peak_ratio: float = 0.75
     split_anti_merge_restart_ratio: float = 3.0
+    # v3.0-B keeps the existing coarse detector and places a small state model
+    # around its evidence. A state transition needs persistence; one noisy
+    # sample can neither enter a rally nor create a split.
+    temporal_enter_persistence_seconds: float = 1.0
+    temporal_leave_persistence_seconds: float = 1.0
+    temporal_restart_persistence_seconds: float = 1.0
+    temporal_min_group_seconds: float = 4.0
+    temporal_min_child_seconds: float = 1.25
+    temporal_min_valley_seconds: float = 0.5
+    temporal_direct_valley_seconds: float = 1.5
+    temporal_min_side_balance: float = 0.12
+    temporal_continue_side_balance: float = 0.08
+    temporal_direct_confidence: float = 0.82
+    temporal_dense_confidence: float = 0.46
+    temporal_dense_fps: float = 8.0
+    temporal_dense_half_window_seconds: float = 2.0
+    temporal_dense_min_valley_seconds: float = 0.5
+    temporal_dense_windows_per_10_minutes: int = 3
     end_refine_fps: float = 8.0
     end_refine_lookback_seconds: float = 3.5
     end_refine_lookahead_seconds: float = 0.65
@@ -334,18 +352,297 @@ def _trim_on_audio_gap(group, metrics, audio_impacts):
     return kept, basis
 
 
+def _side_balance(item):
+    return min(item["left"], item["right"]) / max(
+        .001, item["left"], item["right"])
+
+
+def _compress_temporal_states(states, metrics, frame_seconds):
+    """Return a compact, deterministic trace of the temporal state timeline."""
+    if not states:
+        return []
+    runs = []
+    first = 0
+    for index in range(1, len(states) + 1):
+        if index < len(states) and states[index][1] == states[first][1]:
+            continue
+        runs.append(dict(
+            state=states[first][1],
+            start=round(metrics[states[first][0]]["t"], 3),
+            end=round(metrics[states[index - 1][0]]["t"] + frame_seconds, 3),
+            frames=index - first,
+        ))
+        first = index
+    return runs
+
+
+def _temporal_state_proposals(group, metrics, smoothed, audio_impacts,
+                              threshold, support_threshold, config):
+    """Propose split valleys using an idle/active/ending state machine.
+
+    The state model deliberately observes the existing coarse timeline. Motion
+    must be bilateral and persistent to enter or restart `active`. A pause may
+    remain in `ending` without closing the rally; only a persistent low-evidence
+    interval followed by a persistent restart becomes a split proposal.
+    """
+    frame_seconds = 1 / config.sample_fps
+    enter_frames = max(2, math.ceil(
+        config.temporal_enter_persistence_seconds * config.sample_fps))
+    leave_frames = max(2, math.ceil(
+        config.temporal_leave_persistence_seconds * config.sample_fps))
+    restart_frames = max(2, math.ceil(
+        config.temporal_restart_persistence_seconds * config.sample_fps))
+    full = list(range(group[0], group[-1] + 1))
+    evidence = {}
+    for index in full:
+        balance = _side_balance(metrics[index])
+        evidence[index] = dict(
+            balance=balance,
+            enter=(smoothed[index] >= support_threshold
+                   and balance >= config.temporal_min_side_balance),
+            continue_=(smoothed[index] >= support_threshold
+                       and balance >= config.temporal_continue_side_balance),
+            strong=(smoothed[index] >= threshold
+                    and balance >= config.temporal_min_side_balance),
+        )
+
+    states = []
+    state = "idle"
+    enter_run = []
+    restart_run = []
+    valley_start = None
+    active_seen = False
+    proposals = []
+
+    def append_state(index, value):
+        states.append((index, value))
+
+    def add_proposal(restart_start):
+        nonlocal valley_start
+        if valley_start is None or restart_start <= valley_start:
+            return
+        first, last = valley_start, restart_start - 1
+        valley = list(range(first, last + 1))
+        duration = len(valley) * frame_seconds
+        if duration + 1e-9 < config.temporal_min_valley_seconds:
+            return
+        nearby = max(2, round(2.5 * config.sample_fps))
+        before = [i for i in group if i < first][-nearby:]
+        after = [i for i in group if i >= restart_start][:nearby]
+        if not before or not after:
+            return
+        left_span = (metrics[before[-1]]["t"] - metrics[group[0]]["t"]
+                     + frame_seconds)
+        right_span = (metrics[group[-1]]["t"] - metrics[after[0]]["t"]
+                      + frame_seconds)
+        left_strong = sum(evidence[i]["strong"] for i in before)
+        right_strong = sum(evidence[i]["strong"] for i in after)
+        left_balance = sum(evidence[i]["balance"] for i in before) / len(before)
+        right_balance = sum(evidence[i]["balance"] for i in after) / len(after)
+        low_frames = sum(not evidence[i]["continue_"] for i in valley)
+        one_sided = sum(
+            evidence[i]["balance"] < config.temporal_continue_side_balance
+            for i in valley)
+        low_ratio = low_frames / len(valley)
+        hits = sum(metrics[first]["t"] - .1 <= t <=
+                   metrics[last]["t"] + frame_seconds + .1
+                   for t in audio_impacts)
+        score = sum(smoothed[i] for i in valley) / len(valley)
+        flank = min(max(smoothed[i] for i in before),
+                    max(smoothed[i] for i in after))
+        depth = max(0.0, 1.0 - score / max(.001, flank))
+        confidence = min(1.0, duration / 1.5) * .26
+        confidence += low_ratio * .24
+        confidence += min(1.0, left_strong / 2) * .14
+        confidence += min(1.0, right_strong / 2) * .20
+        confidence += min(1.0, depth / .45) * .16
+        confidence -= min(3, hits) * .025 * min(1.0, 1.5 / duration)
+        point = (metrics[first]["t"] + metrics[last]["t"]) / 2
+        proposals.append(dict(
+            first=first, last=last, point=round(point, 3),
+            motionValleyScore=round(score, 2),
+            motionValleyDuration=round(duration, 2), audioHits=hits,
+            valleyDepth=round(depth, 3),
+            visualConfidence=round(confidence, 3), audioPenalty=0.0,
+            splitConfidence=round(max(0.0, confidence), 3),
+            stateSplitConfidence=round(max(0.0, confidence), 3),
+            stateLowRatio=round(low_ratio, 3),
+            stateOneSidedFrames=one_sided,
+            stateLeftStrongFrames=left_strong,
+            stateRightStrongFrames=right_strong,
+            stateLeftBalance=round(left_balance, 3),
+            stateRightBalance=round(right_balance, 3),
+            stateLeftSpan=round(left_span, 3),
+            stateRightSpan=round(right_span, 3),
+        ))
+
+    for position, index in enumerate(full):
+        row = evidence[index]
+        if state == "idle":
+            if row["enter"]:
+                enter_run.append(index)
+            else:
+                enter_run = []
+            if len(enter_run) >= enter_frames:
+                restart_start = enter_run[-enter_frames]
+                if active_seen and valley_start is not None:
+                    add_proposal(restart_start)
+                state = "active"
+                active_seen = True
+                valley_start = None
+                enter_run = []
+                restart_run = []
+            append_state(index, state)
+            continue
+
+        if state == "active":
+            if row["continue_"]:
+                append_state(index, "active")
+                continue
+            state = "ending"
+            valley_start = index
+            restart_run = []
+            append_state(index, "ending")
+            continue
+
+        # `ending` tolerates a brief pause. After persistent low evidence the
+        # trace becomes idle, but the pending valley remains available until a
+        # persistent bilateral restart appears.
+        if row["enter"]:
+            restart_run.append(index)
+        else:
+            restart_run = []
+        low_length = index - valley_start + 1 if valley_start is not None else 0
+        if len(restart_run) >= restart_frames:
+            restart_start = restart_run[-restart_frames]
+            if restart_start - valley_start < leave_frames:
+                state = "active"
+            else:
+                add_proposal(restart_start)
+                state = "active"
+            valley_start = None
+            restart_run = []
+        elif low_length >= leave_frames:
+            state = "idle"
+            enter_run = []
+            # Keep valley_start: idle after an active rally is different from
+            # the initial idle state and can still produce a split on restart.
+        append_state(index, state)
+
+    trace = _compress_temporal_states(states, metrics, frame_seconds)
+    for proposal in proposals:
+        proposal["temporalStates"] = trace
+    return proposals, trace
+
+
+def analyze_temporal_split_window(metrics, boundary, audio_impacts=None,
+                                  config=None):
+    """Validate one suspected split boundary in a small 8 fps window."""
+    config = config or DetectorConfig()
+    audio_impacts = audio_impacts or []
+    if len(metrics) < 8:
+        return dict(passed=False, reason="insufficient_dense_frames",
+                    boundary=round(boundary, 3))
+    raw = [item["motion"] for item in metrics]
+    smoothed = _smooth(raw)
+    baseline = percentile(smoothed, .25)
+    activity = percentile(smoothed, .88)
+    delta = max(.28, (activity - baseline) * .42)
+    threshold = baseline + delta
+    support = baseline + max(.16, delta * .48)
+    bilateral = [_side_balance(item) >= config.temporal_min_side_balance
+                 for item in metrics]
+    active = [value >= support and bilateral[index]
+              for index, value in enumerate(smoothed)]
+    strong = [value >= threshold and bilateral[index]
+              for index, value in enumerate(smoothed)]
+
+    runs, run = [], []
+    for index, is_active in enumerate(active):
+        if not is_active:
+            run.append(index)
+        elif run:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+    max_distance = .8
+    candidates = []
+    for valley in runs:
+        start_t = metrics[valley[0]]["t"]
+        end_t = metrics[valley[-1]]["t"] + 1 / config.temporal_dense_fps
+        if start_t <= boundary <= end_t:
+            distance = 0.0
+        else:
+            distance = min(abs(boundary - start_t), abs(boundary - end_t))
+        duration = end_t - start_t
+        if distance <= max_distance and duration + 1e-9 >= (
+                config.temporal_dense_min_valley_seconds):
+            candidates.append((distance, -duration, valley))
+    if not candidates:
+        return dict(passed=False, reason="no_persistent_dense_valley",
+                    boundary=round(boundary, 3),
+                    denseThreshold=round(threshold, 3),
+                    denseSupportThreshold=round(support, 3))
+    _, _, valley = min(candidates)
+    first, last = valley[0], valley[-1]
+    flank_frames = max(4, round(1.25 * config.temporal_dense_fps))
+    before = list(range(max(0, first - flank_frames), first))
+    after = list(range(last + 1, min(len(metrics), last + 1 + flank_frames)))
+    left_strong = sum(strong[i] for i in before)
+    right_strong = sum(strong[i] for i in after)
+    left_support = sum(active[i] for i in before)
+    right_support = sum(active[i] for i in after)
+    valley_duration = (last - first + 1) / config.temporal_dense_fps
+    hits = sum(metrics[first]["t"] - .08 <= t <=
+               metrics[last]["t"] + 1 / config.temporal_dense_fps + .08
+               for t in audio_impacts)
+    complete_sides = (left_strong >= 2 and right_strong >= 2
+                      and left_support >= 3 and right_support >= 3)
+    passed = complete_sides
+    confidence = min(1.0, valley_duration / 1.0) * .45
+    confidence += min(1.0, left_strong / 3) * .20
+    confidence += min(1.0, right_strong / 3) * .25
+    confidence -= min(hits, 3) * .025
+    return dict(
+        passed=passed,
+        reason=("persistent_dense_valley_bilateral_restart" if passed
+                else "dense_flanks_insufficient"),
+        boundary=round(boundary, 3),
+        denseBoundary=round((metrics[first]["t"] + metrics[last]["t"]) / 2, 3),
+        denseValleyStart=round(metrics[first]["t"], 3),
+        denseValleyEnd=round(metrics[last]["t"]
+                             + 1 / config.temporal_dense_fps, 3),
+        denseValleyDuration=round(valley_duration, 3),
+        denseLeftStrongFrames=left_strong,
+        denseRightStrongFrames=right_strong,
+        denseLeftSupportFrames=left_support,
+        denseRightSupportFrames=right_support,
+        denseAudioHits=hits,
+        denseConfidence=round(max(0.0, confidence), 3),
+        denseThreshold=round(threshold, 3),
+        denseSupportThreshold=round(support, 3),
+    )
+
+
 def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
-                             threshold, config):
+                             threshold, config, support_threshold=None,
+                             dense_split_evidence=None):
     """Split a long visual group only at sustained valleys with visual restart.
 
     Audio never proposes or unconditionally vetoes a split. It only discounts
     confidence in a short pause; sustained visual evidence remains primary.
     """
     frame_seconds = 1 / config.sample_fps
+    support_threshold = (threshold * .85 if support_threshold is None
+                         else support_threshold)
     span = (metrics[group[-1]]["t"] - metrics[group[0]]["t"]
             + frame_seconds)
-    if span < config.split_min_group_seconds:
-        return [(group, None)], [dict(decision="keep", reason="short_candidate")]
+    dense_split_evidence = dense_split_evidence or {}
+    temporal_proposals, temporal_trace = _temporal_state_proposals(
+        group, metrics, smoothed, audio_impacts, threshold,
+        support_threshold, config)
+    legacy_enabled = span >= config.split_min_group_seconds
 
     low_limit = threshold * config.split_valley_threshold_ratio
     min_valley_frames = max(2, math.ceil(config.split_min_valley_seconds
@@ -354,7 +651,7 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
     full = range(group[0], group[-1] + 1)
     runs = []
     run = []
-    for index in full:
+    for index in full if legacy_enabled else ():
         if raw[index] <= low_limit:
             run.append(index)
         elif run:
@@ -365,6 +662,7 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
 
     checks = []
     viable = []
+    check_bounds = {}
     for valley in runs:
         first, last = valley[0], valley[-1]
         before = [i for i in group if i < first]
@@ -382,6 +680,7 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
                      splitConfidence=None, antiMergeGuard=False,
                      decision="keep", reason="")
         checks.append(check)
+        check_bounds[id(check)] = (first, last)
         if not before or not after:
             check["reason"] = "edge_valley"
             continue
@@ -445,9 +744,173 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
             continue
         viable.append((first, last, check))
 
+    for proposal in temporal_proposals:
+        first, last = proposal.pop("first"), proposal.pop("last")
+        closest = min(checks, key=lambda item: abs(
+            item.get("point", float("inf")) - proposal["point"])) if checks else None
+        if closest is not None and abs(closest.get("point", 0)
+                                       - proposal["point"]) <= 1.0:
+            check = closest
+            check.update({key: value for key, value in proposal.items()
+                          if key.startswith("state") or key == "temporalStates"})
+            check["temporalCorroborated"] = True
+        else:
+            check = dict(proposal, antiMergeGuard=False,
+                         decision="keep", reason="")
+            check["temporalState"] = True
+            checks.append(check)
+        check_bounds[id(check)] = (first, last)
+        if any(existing[2] is check for existing in viable):
+            continue
+        check["temporalState"] = True
+        child_ok = (proposal["stateLeftSpan"] + 1e-9
+                    >= config.temporal_min_child_seconds
+                    and proposal["stateRightSpan"] + 1e-9
+                    >= config.temporal_min_child_seconds)
+        flank_ok = (proposal["stateLeftStrongFrames"] >= 1
+                    and proposal["stateRightStrongFrames"] >= 1
+                    and proposal["stateLeftBalance"]
+                    >= config.temporal_min_side_balance
+                    and proposal["stateRightBalance"]
+                    >= config.temporal_min_side_balance)
+        direct = (
+            proposal["motionValleyDuration"] + 1e-9
+            >= config.temporal_direct_valley_seconds
+            and proposal["stateLowRatio"] >= .67
+            and proposal["stateLeftStrongFrames"] >= 2
+            and proposal["stateRightStrongFrames"] >= 2
+            and proposal["splitConfidence"]
+            >= config.temporal_direct_confidence
+            and proposal["audioHits"] <= 3
+            and proposal["stateLeftSpan"] + 1e-9
+            >= config.split_min_side_seconds
+            and proposal["stateRightSpan"] + 1e-9
+            >= config.split_min_side_seconds
+            and child_ok and flank_ok
+        )
+        dense = dense_split_evidence.get(f"{proposal['point']:.3f}")
+        if direct:
+            nearby_viable = [item for item in viable
+                             if item[2].get("point") is not None
+                             and abs(item[2]["point"] - proposal["point"])
+                             <= 4.0]
+            if nearby_viable:
+                check.update(reason="temporal_redundant_near_coarse_split",
+                             denseCheckRequested=False,
+                             denseSplitEvidence=None)
+                continue
+            check.update(decision="keep", reason="temporal_state_clear_valley",
+                         denseCheckRequested=False, denseSplitEvidence=None)
+            viable.append((first, last, check))
+            continue
+        if not child_ok:
+            check.update(reason="temporal_short_child",
+                         denseCheckRequested=False, denseSplitEvidence=None)
+            continue
+        if not flank_ok or proposal["splitConfidence"] < (
+                config.temporal_dense_confidence):
+            check.update(reason="temporal_weak_flanks",
+                         denseCheckRequested=False, denseSplitEvidence=None)
+            continue
+        check.update(reason="temporal_state_ambiguous",
+                     denseCheckRequested=False, denseSplitEvidence=dense)
+
+    # A coarse state transition may be too weak to split directly while still
+    # identifying where a long, joined candidate deserves a local re-check.
+    # Restrict that re-check to central structural valleys: this avoids dense
+    # scans of ordinary pauses and prevents short candidates from fragmenting.
+    group_start = metrics[group[0]]["t"]
+    group_end = metrics[group[-1]]["t"] + frame_seconds
+    group_audio_hits = sum(group_start - config.pre_roll_seconds <= impact <=
+                           group_end + config.post_roll_seconds
+                           for impact in audio_impacts)
+    state_points = [proposal["point"] for proposal in temporal_proposals]
+    structural_request_points = []
+    if (span >= config.split_anti_merge_min_group_seconds
+            and group_audio_hits >= config.auxiliary_audio_hits):
+        for check in checks:
+            if any(item[2] is check for item in viable):
+                continue
+            point = check.get("point")
+            bounds = check_bounds.get(id(check))
+            confidence = check.get("splitConfidence") or 0.0
+            if point is None or bounds is None or confidence < .50:
+                continue
+            left_span = point - group_start
+            right_span = group_end - point
+            minimum_side = min(left_span, right_span)
+            central = (minimum_side + 1e-9 >= config.split_min_side_seconds
+                       and minimum_side / max(.001, span) >= .30)
+            nearby_state = any(abs(point - candidate) <= 3.5
+                               for candidate in state_points)
+            existing_points = [item[2].get("point") for item in viable]
+            existing_points = [value for value in existing_points
+                               if value is not None]
+            short_second_split = (
+                check.get("reason") == "brief_valley"
+                and config.temporal_min_child_seconds <= minimum_side
+                <= config.split_min_side_seconds
+                and any(point - value >= config.split_min_side_seconds
+                        for value in existing_points)
+            )
+            structural = (
+                central and (
+                    (check.get("reason") in (
+                        "low_split_confidence", "shallow_valley")
+                     and (check.get("motionValleyDuration") or 0) >= 1.0)
+                    or (check.get("reason") == "temporal_state_ambiguous"
+                        and (check.get("motionValleyDuration") or 0) >= 1.0)
+                    or (check.get("reason") == "brief_valley"
+                        and nearby_state)
+                )
+            ) or short_second_split
+            if not structural:
+                continue
+            if (not short_second_split
+                    and any(abs(point - value) <= 3.0
+                            for value in existing_points)):
+                continue
+            if any(abs(point - value) <= 4.0
+                   for value in structural_request_points):
+                continue
+            structural_request_points.append(point)
+            check["structuralRefinement"] = True
+            check["structuralPriority"] = (1.0 if short_second_split else
+                                           .2 if check.get("temporalState")
+                                           else 0.0)
+            dense = dense_split_evidence.get(f"{point:.3f}")
+            check["denseSplitEvidence"] = dense
+            if dense is None:
+                check.update(reason="structural_dense_recheck_required",
+                             denseCheckRequested=True)
+                continue
+            check["denseCheckRequested"] = False
+            if not dense.get("passed"):
+                check["reason"] = dense.get(
+                    "reason", "structural_dense_recheck_failed")
+                continue
+            check.update(
+                reason="structural_dense_valley_restart",
+                splitConfidence=round(max(confidence,
+                                          dense.get("denseConfidence", 0)), 3),
+            )
+            viable.append((*bounds, check))
+
+    for check in checks:
+        check.setdefault("temporalStates", temporal_trace)
+        check.setdefault("temporalState", False)
+        check.setdefault("denseCheckRequested", False)
+        check.setdefault("denseSplitEvidence", None)
+
     if not viable:
-        return [(group, None)], checks or [dict(
-            decision="keep", reason="no_sustained_valley")]
+        if not checks:
+            reason = ("short_candidate" if span < config.temporal_min_group_seconds
+                      else "no_sustained_valley")
+            checks = [dict(decision="keep", reason=reason,
+                           temporalStates=temporal_trace,
+                           temporalState=span >= config.temporal_min_group_seconds,
+                           denseCheckRequested=False)]
+        return [(group, None)], checks
 
     # Evaluate every qualified valley in time order. A later, deeper valley
     # must not hide an earlier rally boundary; the fragment guard still limits
@@ -467,8 +930,12 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
         def viable_piece(piece):
             if not piece or len(piece) < config.min_active_frames:
                 return False
+            minimum_span = (config.temporal_min_child_seconds
+                            if (check.get("temporalState")
+                                or check.get("structuralRefinement"))
+                            else config.split_min_side_seconds)
             if (metrics[piece[-1]]["t"] - metrics[piece[0]]["t"]
-                    + frame_seconds < config.split_min_side_seconds):
+                    + frame_seconds < minimum_span):
                 return False
             window = metrics[piece[0]:piece[-1] + 1]
             left = sum(item["left"] for item in window)
@@ -488,11 +955,20 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
             continue
         accepted = proposed
         check["decision"] = "split"
-        check["reason"] = (
-            "long_candidate_clear_gap_visual_restart"
-            if check.get("antiMergeGuard")
-            else "sustained_motion_valley_visual_restart"
-        )
+        if check.get("temporalState"):
+            check["reason"] = (
+                "structural_dense_valley_restart"
+                if check.get("structuralRefinement")
+                else "temporal_state_clear_valley"
+            )
+        elif check.get("structuralRefinement"):
+            check["reason"] = "structural_dense_valley_restart"
+        else:
+            check["reason"] = (
+                "long_candidate_clear_gap_visual_restart"
+                if check.get("antiMergeGuard")
+                else "sustained_motion_valley_visual_restart"
+            )
 
     if not accepted:
         return [(group, None)], checks
@@ -506,7 +982,8 @@ def _split_on_motion_valleys(group, metrics, raw, smoothed, audio_impacts,
     return parts, checks
 
 
-def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
+def analyze_motion(metrics, audio_impacts=None, config=None, duration=None,
+                   dense_split_evidence=None):
     """Create ROI visual candidates, then optionally split sustained valleys."""
     config = config or DetectorConfig()
     audio_impacts = audio_impacts or []
@@ -540,7 +1017,8 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
     all_split_checks = []
     for group in groups:
         parts, checks = _split_on_motion_valleys(
-            group, metrics, raw, smoothed, audio_impacts, threshold, config)
+            group, metrics, raw, smoothed, audio_impacts, threshold,
+            config, support_threshold, dense_split_evidence)
         all_split_checks.extend(checks)
         if len(parts) > 1:
             for part, split_check in parts:
@@ -658,7 +1136,52 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
                             if split_check.get("antiMergeGuard") else None),
             splitDecision=split_check["decision"],
             splitReason=split_check["reason"], splitChecks=split_checks,
+            temporalStates=split_check.get("temporalStates", []),
+            splitApplied=split_check["decision"] == "split",
+            splitBasis=(split_check.get("reason")
+                        if split_check["decision"] == "split" else None),
+            splitBoundary=(split_check.get("point")
+                           if split_check["decision"] == "split" else None),
+            splitEvidence=dict(
+                source=("temporal_state" if split_check.get("temporalState")
+                        else "legacy_motion_valley"),
+                stateLowRatio=split_check.get("stateLowRatio"),
+                stateOneSidedFrames=split_check.get("stateOneSidedFrames"),
+                dense=split_check.get("denseSplitEvidence"),
+            ),
         ))
+    candidates.sort(key=lambda item: (item["start"], item["end"]))
+    for left, right in zip(candidates, candidates[1:]):
+        if left["end"] < right["start"]:
+            continue
+        if not (left.get("splitApplied") or right.get("splitApplied")):
+            continue
+        original_end = left["end"]
+        adjusted_end = round(max(left["start"], right["start"] - .001), 3)
+        if adjusted_end >= original_end:
+            continue
+        left["end"] = adjusted_end
+        left["duration"] = round(adjusted_end - left["start"], 3)
+        left["splitOverlapTrimmed"] = True
+        left["splitOverlapOriginalEnd"] = original_end
+    for candidate in candidates:
+        candidate.setdefault("splitOverlapTrimmed", False)
+        candidate.setdefault("splitOverlapOriginalEnd", None)
+    dense_requests = {}
+    for check in all_split_checks:
+        if not check.get("denseCheckRequested") or check.get("point") is None:
+            continue
+        key = f"{check['point']:.3f}"
+        priority = ((check.get("splitConfidence") or 0)
+                    + min(2.0, check.get("motionValleyDuration") or 0) * .05
+                    + (check.get("structuralPriority") or 0))
+        if key not in dense_requests or priority > dense_requests[key]["priority"]:
+            dense_requests[key] = dict(
+                point=round(check["point"], 3),
+                priority=round(priority, 3),
+                coarseConfidence=check.get("splitConfidence"),
+                coarseValleyDuration=check.get("motionValleyDuration"),
+            )
     diagnostics = dict(
         motionBaseline=round(baseline, 2), motionActivity=round(activity, 2),
         motionThreshold=round(threshold, 2),
@@ -671,6 +1194,12 @@ def analyze_motion(metrics, audio_impacts=None, config=None, duration=None):
                                for check in all_split_checks),
         motionValleysKept=sum(check["decision"] == "keep"
                              for check in all_split_checks),
+        temporalStateSplits=sum(
+            check["decision"] == "split" and check.get("temporalState")
+            for check in all_split_checks),
+        temporalDenseCheckPoints=sorted(
+            dense_requests.values(), key=lambda item: (-item["priority"],
+                                                        item["point"])),
     )
     return candidates, diagnostics
 
@@ -1025,6 +1554,13 @@ def refine_candidate_end(candidate, metrics, audio_impacts, config=None):
     result.setdefault("rescueUnionDecision", None)
     result.setdefault("antiMergeGuardApplied", False)
     result.setdefault("antiMergeBasis", None)
+    result.setdefault("temporalStates", [])
+    result.setdefault("splitApplied", result.get("splitDecision") == "split")
+    result.setdefault("splitBasis", (result.get("splitReason")
+                                      if result.get("splitDecision") == "split"
+                                      else None))
+    result.setdefault("splitBoundary", result.get("splitPoint"))
+    result.setdefault("splitEvidence", None)
     result.update(refinedEnd=False, originalEnd=round(original_end, 3),
                   endRefineBasis=None)
     if len(metrics) < 6:
@@ -1171,12 +1707,50 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
     coarse_analysis_seconds = time.perf_counter() - stage_started
     analyzed_end = metrics[-1]["t"] + 1 / config.sample_fps
     stop = stop if stop is not None else analyzed_end
+    local_decode_failures = []
+
+    # Coarse state transitions are cheap. Only the highest-priority ambiguous
+    # boundaries receive a small 8 fps window, after which the same coarse
+    # analysis is rerun with the local evidence attached.
+    video_units = max(1.0, (stop - start) / 600.0)
+    temporal_budget = max(1, math.ceil(
+        config.temporal_dense_windows_per_10_minutes * video_units))
+    temporal_requests = motion_diagnostics.get("temporalDenseCheckPoints", [])
+    selected_temporal = temporal_requests[:temporal_budget]
+    temporal_evidence = {}
+    temporal_dense_decoded_seconds = 0.0
+    temporal_dense_wall_seconds = 0.0
+    for request in selected_temporal:
+        point = request["point"]
+        window_start = max(start, point - config.temporal_dense_half_window_seconds)
+        window_end = min(stop, point + config.temporal_dense_half_window_seconds)
+        if window_end - window_start < 1.0:
+            continue
+        try:
+            stage_started = time.perf_counter()
+            dense = decode_motion(
+                video_path, ffmpeg_path, roi, config, window_start, window_end,
+                sample_fps=config.temporal_dense_fps, keyframes_only=False)
+            temporal_dense_wall_seconds += time.perf_counter() - stage_started
+        except DetectionError as exc:
+            local_decode_failures.append(dict(
+                stage="temporal_split", point=point,
+                window=[round(window_start, 3), round(window_end, 3)],
+                error=str(exc)))
+            continue
+        temporal_dense_decoded_seconds += window_end - window_start
+        temporal_evidence[f"{point:.3f}"] = analyze_temporal_split_window(
+            dense, point, audio_impacts, config)
+    if temporal_evidence:
+        stage_started = time.perf_counter()
+        candidates, motion_diagnostics = analyze_motion(
+            metrics, audio_impacts, config, stop, temporal_evidence)
+        coarse_analysis_seconds += time.perf_counter() - stage_started
 
     rescue_windows, rescue_proposal_diagnostics = propose_rescue_windows(
         metrics, audio_impacts, candidates, config, stop,
         include_diagnostics=True)
     rescued = []
-    local_decode_failures = []
     rescue_decoded_seconds = 0.0
     rescue_wall_seconds = 0.0
     rescue_union_rejections = {}
@@ -1214,7 +1788,7 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
         priority = _end_refine_priority(candidate, audio_impacts, config)
         if priority is not None:
             priorities.append((priority, index))
-    video_minutes = max(1.0, (stop - start) / 600.0)
+    video_minutes = video_units
     end_window_budget = max(1, math.ceil(
         config.end_refine_windows_per_10_minutes * video_minutes))
     selected_end_indices = {index for _, index in sorted(
@@ -1272,28 +1846,37 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
             refinedEndCandidates=refined_count,
             endRefineEligibleCandidates=len(priorities),
             endRefineWindows=len(selected_end_indices),
+            temporalDenseRequests=len(temporal_requests),
+            temporalDenseWindows=len(selected_temporal),
+            temporalDenseEvidence=temporal_evidence,
+            temporalDenseSkipped=max(0, len(temporal_requests)
+                                     - len(selected_temporal)),
+            temporalDenseDecodedSeconds=round(
+                temporal_dense_decoded_seconds, 3),
             rescueDecodedSeconds=round(rescue_decoded_seconds, 3),
             endRefineDecodedSeconds=round(end_decoded_seconds, 3),
             runtimeBreakdownSeconds=dict(
                 coarseMotionDecode=round(coarse_decode_seconds, 3),
                 audioDecode=round(audio_decode_seconds, 3),
                 coarseAnalysis=round(coarse_analysis_seconds, 3),
+                temporalSplitDenseDecode=round(
+                    temporal_dense_wall_seconds, 3),
                 rescueDenseDecode=round(rescue_wall_seconds, 3),
                 endRefineDenseDecode=round(end_refine_wall_seconds, 3),
                 total=round(total_wall_seconds, 3),
             ),
             localDecodeFailures=local_decode_failures,
-            note=("主要候選仍由 2 fps ROI 視覺動態產生；只有音訊群集加上雙側粗略動作"
-                  "或 A2 的窄幅替代證據支持的短視窗才進行局部高 fps rescue。局部 valley"
-                  "會保持 burst 分離，且不會在缺乏連續性時與既有候選合併。候選終點可由"
-                  "局部高 fps 動作下降及音訊安靜共同縮短；既有候選起點不變。"),
+            note=("主要候選仍由 2 fps ROI 視覺動態產生；B 的 idle/active/ending 狀態"
+                  "以持續低證據及雙側重新啟動提出結構切分，只在模糊邊界附近局部進行"
+                  "8 fps 驗證。A2 short rescue 與 end refinement 保留；音訊只作佐證，"
+                  "既有候選起點修正路徑不變。"),
         ),
     )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Rally Detection v3.0-A2：2 fps ROI 粗掃與局部高 fps 修正。")
+        description="Rally Detection v3.0-B：2 fps ROI 粗掃、temporal state 與局部切分。")
     parser.add_argument("video")
     parser.add_argument("--roi", required=True, help="x,y,w,h；皆為 0–1 比例")
     parser.add_argument("--ffmpeg", default="ffmpeg")
@@ -1312,7 +1895,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    print(f"Rally Detection v3.0-A2 · {result['source']}")
+    print(f"Rally Detection v3.0-B · {result['source']}")
     print("候選由 ROI 影像產生；音訊只作輔助。人工確認前不會建立事件。\n")
     for i, item in enumerate(result["candidates"], 1):
         print(f"{i:3d}  {item['start']:8.2f} → {item['end']:8.2f}  "
