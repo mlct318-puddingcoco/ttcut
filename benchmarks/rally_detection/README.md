@@ -22,6 +22,23 @@ Run the harness tests:
 python3 -m unittest discover -s benchmarks/rally_detection/tests -v
 ```
 
+Confidence-only revisions can be audited against raw detector JSON without
+changing the frozen matching methodology:
+
+```bash
+python3 -m benchmarks.rally_detection.analyze_confidence \
+  --benchmark benchmark_01 /tmp/benchmark-01.json \
+  --benchmark benchmark_02 /tmp/benchmark-02.json \
+  --benchmark benchmark_03 /tmp/benchmark-03.json \
+  --output /tmp/confidence-analysis.json
+```
+
+The report labels official-window candidates with the same one-to-one matcher
+and includes old/new score distributions, ROC-AUC, average precision, Brier,
+calibration buckets, threshold sweeps, bottom-quartile enrichment, and a
+leave-one-benchmark-out formula-family robustness check. Confidence is review
+metadata only; the analysis never removes candidates.
+
 ## Evaluate a new three-match candidate
 
 Provide one compact JSON file. `coverage` is `full_source` when out-of-window

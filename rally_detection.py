@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rally Detection v3.0-B: temporal state and structural merge splitting.
+"""Rally Detection v3.0-C: calibrated review-evidence confidence.
 
 The detector is intentionally conservative about side effects: it only returns
 review candidates.  It never creates ttcut events and never decides a winner.
@@ -19,7 +19,7 @@ from array import array
 from dataclasses import dataclass
 
 
-METHOD = "roi-motion-audio-temporal-state-v3.0-b"
+METHOD = "roi-motion-audio-confidence-v3.0-c"
 
 
 @dataclass(frozen=True)
@@ -136,6 +136,73 @@ def percentile(values, q):
     if lo == hi:
         return ordered[lo]
     return ordered[lo] + (ordered[hi] - ordered[lo]) * (pos - lo)
+
+
+def calibrate_candidate_confidence(candidate):
+    """Return a candidate with a bounded, explainable evidence score.
+
+    The score is deliberately ordinal rather than a claimed probability. It
+    uses only diagnostics produced after candidate generation, so it cannot
+    create, remove, split, merge, or move an interval. Dense-validated rescue
+    and split evidence is rewarded; audio remains diagnostic context only.
+    """
+    result = dict(candidate)
+    raw_confidence = float(candidate.get(
+        "rawConfidence", candidate.get("confidence", 0.0)))
+    rescue_applied = bool(candidate.get("rescueApplied"))
+    sample_fps = float((candidate.get("rescueSampleFps") or 8.0)
+                       if rescue_applied else 2.0)
+    support_seconds = float(candidate.get("supportFrames") or 0) / sample_fps
+    strong_seconds = float(candidate.get("strongFrames") or 0) / sample_fps
+    side_balance = max(0.0, min(1.0, float(
+        candidate.get("sideBalance") or 0.0)))
+    short_evidence = candidate.get("shortEvidence") or {}
+    structural_penalty = max(0.0, float(
+        short_evidence.get("penalty") or 0.0))
+
+    # Bilateral evidence is strongest in a target-table-like middle range.
+    # Near-perfect symmetry is treated cautiously because the three benchmark
+    # scenes show it can be sustained background/camera motion, not a rally.
+    bilateral = max(0.0, 1.0 - abs(side_balance - 0.35) / 0.35)
+    background_symmetry = max(0.0, min(1.0,
+        (side_balance - 0.60) / 0.30))
+    components = dict(
+        base=0.28,
+        sustainedSupport=0.26 * min(1.0, support_seconds / 5.0),
+        sustainedStrong=0.10 * min(1.0, strong_seconds / 3.0),
+        bilateralTargetEvidence=0.20 * bilateral,
+        validatedSplit=0.12 if candidate.get("splitApplied") else 0.0,
+        validatedRescue=0.20 if rescue_applied else 0.0,
+        backgroundSymmetryCaution=-0.20 * background_symmetry,
+        structuralWeakness=-0.50 * structural_penalty,
+    )
+    score = max(0.0, min(0.99, sum(components.values())))
+    confidence = round(score, 2)
+    tier = "high" if confidence >= 0.75 else (
+        "medium" if confidence >= 0.55 else "low")
+    positive = [name for name in (
+        "validatedRescue", "validatedSplit", "bilateralTargetEvidence",
+        "sustainedSupport", "sustainedStrong")
+        if components[name] >= 0.08]
+    cautions = [name for name in (
+        "backgroundSymmetryCaution", "structuralWeakness")
+        if components[name] <= -0.04]
+    result.update(
+        rawConfidence=round(max(0.0, min(1.0, raw_confidence)), 2),
+        confidence=confidence,
+        confidenceTier=tier,
+        confidenceBasis=dict(
+            model="cross-scene-evidence-v1",
+            kind="ordinal_evidence_not_probability",
+            supportSeconds=round(support_seconds, 3),
+            strongSeconds=round(strong_seconds, 3),
+            components={name: round(value, 3)
+                        for name, value in components.items()},
+            positive=positive,
+            cautions=cautions,
+        ),
+    )
+    return result
 
 
 def validate_roi(roi):
@@ -1826,7 +1893,8 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
         item = refine_candidate_end(candidate, dense, audio_impacts, config)
         refined_count += bool(item["refinedEnd"])
         refined.append(item)
-    candidates = refined
+    candidates = [calibrate_candidate_confidence(candidate)
+                  for candidate in refined]
     total_wall_seconds = time.perf_counter() - total_started
     return dict(
         version=3, method=METHOD, source=os.path.basename(video_path), roi=roi,
@@ -1869,14 +1937,15 @@ def detect_video(video_path, roi, ffmpeg="ffmpeg", duration=None, start=0.0, end
             note=("主要候選仍由 2 fps ROI 視覺動態產生；B 的 idle/active/ending 狀態"
                   "以持續低證據及雙側重新啟動提出結構切分，只在模糊邊界附近局部進行"
                   "8 fps 驗證。A2 short rescue 與 end refinement 保留；音訊只作佐證，"
-                  "既有候選起點修正路徑不變。"),
+                  "既有候選起點修正路徑不變。C 僅將既有診斷轉為 ordinal evidence "
+                  "score，不參與候選建立或篩選。"),
         ),
     )
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Rally Detection v3.0-B：2 fps ROI 粗掃、temporal state 與局部切分。")
+        description="Rally Detection v3.0-C：保留 B 偵測，校準候選證據分數。")
     parser.add_argument("video")
     parser.add_argument("--roi", required=True, help="x,y,w,h；皆為 0–1 比例")
     parser.add_argument("--ffmpeg", default="ffmpeg")
@@ -1895,7 +1964,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
-    print(f"Rally Detection v3.0-B · {result['source']}")
+    print(f"Rally Detection v3.0-C · {result['source']}")
     print("候選由 ROI 影像產生；音訊只作輔助。人工確認前不會建立事件。\n")
     for i, item in enumerate(result["candidates"], 1):
         print(f"{i:3d}  {item['start']:8.2f} → {item['end']:8.2f}  "
@@ -1903,7 +1972,8 @@ def main(argv=None):
               f"motion {item['motionMean']:5.2f}/{item['motionPeak']:5.2f}  "
               f"左右 {item['sideBalance']:.2f}  audio {item['audioHits']:2d}  "
               f"frames {item['strongFrames']}/{item['supportFrames']}  "
-              f"{item['boundaryBasis']}  score {item['confidence']:.0%}"
+              f"{item['boundaryBasis']}  evidence {item['confidence']:.0%}"
+              f" (raw {item['rawConfidence']:.0%})"
               f" ({item['confidenceTier']})")
         valley = (f"{item['motionValleyScore']:.2f}/"
                   f"{item['motionValleyDuration']:.2f}s"
@@ -1924,8 +1994,8 @@ def main(argv=None):
                       f"split {check['splitConfidence']} · "
                       f"{check['decision']}: {check['reason']}")
         if item["shortEvidence"]["penalty"]:
-            print(f"       short confidence {item['baseConfidence']:.0%} → "
-                  f"{item['confidence']:.0%} · "
+            print(f"       short raw confidence {item['baseConfidence']:.0%} → "
+                  f"{item['rawConfidence']:.0%} · "
                   f"{','.join(item['shortEvidence']['penaltyReasons'])}")
     diagnostics = result["diagnostics"]
     print(f"\n共 {len(result['candidates'])} 個視覺候選。"

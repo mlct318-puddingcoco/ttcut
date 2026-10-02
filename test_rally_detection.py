@@ -9,6 +9,7 @@ from rally_detection import (
     analyze_rescue_window,
     analyze_rescue_window_candidates,
     analyze_motion,
+    calibrate_candidate_confidence,
     integrate_rescue_candidate,
     percentile,
     propose_rescue_windows,
@@ -32,6 +33,69 @@ class RoiTests(unittest.TestCase):
             validate_roi({"x": .2, "y": .2, "w": .02, "h": .5})
         with self.assertRaises(DetectionError):
             validate_roi({"x": .8, "y": .2, "w": .4, "h": .5})
+
+
+class ConfidenceCalibrationTests(unittest.TestCase):
+    def _candidate(self, **changes):
+        candidate = dict(
+            start=12.5, end=17.0, duration=4.5,
+            confidence=.82, supportFrames=9, strongFrames=6,
+            sideBalance=.35, splitApplied=False, rescueApplied=False,
+            shortEvidence=dict(penalty=0.0, penaltyReasons=[],
+                               completePattern=True),
+        )
+        candidate.update(changes)
+        return candidate
+
+    def test_bilateral_complete_evidence_scores_above_background(self):
+        target = calibrate_candidate_confidence(self._candidate())
+        one_sided = calibrate_candidate_confidence(self._candidate(
+            sideBalance=.12))
+        background = calibrate_candidate_confidence(self._candidate(
+            sideBalance=.95))
+        self.assertGreater(target["confidence"], one_sided["confidence"])
+        self.assertGreater(target["confidence"], background["confidence"])
+        self.assertIn("backgroundSymmetryCaution",
+                      background["confidenceBasis"]["cautions"])
+
+    def test_validated_short_rescue_can_score_high(self):
+        rescued = calibrate_candidate_confidence(self._candidate(
+            end=14.1, duration=1.6, supportFrames=12, strongFrames=8,
+            sideBalance=.32, rescueApplied=True, rescueSampleFps=8.0,
+            confidence=.66))
+        self.assertGreaterEqual(rescued["confidence"], .75)
+        self.assertEqual(rescued["confidenceTier"], "high")
+        self.assertIn("validatedRescue",
+                      rescued["confidenceBasis"]["positive"])
+
+    def test_weak_ambiguous_candidate_scores_lower(self):
+        complete = calibrate_candidate_confidence(self._candidate())
+        weak = calibrate_candidate_confidence(self._candidate(
+            supportFrames=3, strongFrames=1, sideBalance=.68,
+            shortEvidence=dict(penalty=.22,
+                               penaltyReasons=["few_strong_frames",
+                                               "incomplete_rise_fall"],
+                               completePattern=False)))
+        self.assertLess(weak["confidence"], complete["confidence"])
+        self.assertEqual(weak["confidenceTier"], "low")
+
+    def test_score_is_bounded_and_deterministic(self):
+        candidate = self._candidate(
+            supportFrames=10000, strongFrames=10000, sideBalance=.35,
+            splitApplied=True, rescueApplied=True, rescueSampleFps=8.0)
+        first = calibrate_candidate_confidence(candidate)
+        second = calibrate_candidate_confidence(candidate)
+        self.assertEqual(first, second)
+        self.assertGreaterEqual(first["confidence"], 0.0)
+        self.assertLessEqual(first["confidence"], 1.0)
+
+    def test_legacy_confidence_is_preserved_without_moving_interval(self):
+        legacy = self._candidate(confidence=.63)
+        calibrated = calibrate_candidate_confidence(legacy)
+        self.assertEqual(calibrated["rawConfidence"], .63)
+        self.assertEqual((calibrated["start"], calibrated["end"]),
+                         (legacy["start"], legacy["end"]))
+        self.assertNotIn("rawConfidence", legacy)
 
 
 class MotionTests(unittest.TestCase):

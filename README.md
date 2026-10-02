@@ -78,6 +78,11 @@ Different source resolutions require an ROI for each segment. If the resolution 
 
 Candidates may include false positives or miss real rallies. Low-confidence candidates stay visible for human judgment; selecting or previewing a candidate does not change match events.
 
+Candidate confidence is an ordinal review-evidence score, not a probability and
+not an automatic acceptance rule. It combines sustained target-table motion,
+bilateral structure, and validated rescue/split evidence; the detector keeps the
+legacy raw score in JSON for diagnostics. Every candidate remains reviewable.
+
 ### Rally Review Mode
 
 Review Mode opens the first unreviewed candidate at a paused, segment-clamped 0.8-second pre-roll:

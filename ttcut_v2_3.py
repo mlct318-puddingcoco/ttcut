@@ -2947,8 +2947,15 @@ HTML = r"""<meta charset="utf-8">
     const manualOpen = manualReviewInProgress();
     $('reviewCount').textContent = `候選 ${String(reviewIndex + 1).padStart(2,'0')} / ${rallyCandidates.length}`;
     $('reviewTime').textContent = `全域 ${fmt(candidate.start)}`;
-    const low = candidate.confidenceTier === 'low';
-    $('reviewConfidence').textContent = `${low ? '⚠ 低信心候選' : '高信心候選'} · ${Math.round(candidate.confidence * 100)}%`;
+    const confidenceTier = candidate.confidenceTier === 'high' ? 'high' :
+      candidate.confidenceTier === 'low' ? 'low' : 'medium';
+    const low = confidenceTier === 'low';
+    const tierLabel = low ? '⚠ 低證據候選' :
+      confidenceTier === 'high' ? '高證據候選' : '中等證據候選';
+    const rawScore = candidate.rawConfidence == null ? '' :
+      ` · 舊分數 ${Math.round(candidate.rawConfidence * 100)}%`;
+    $('reviewConfidence').textContent =
+      `${tierLabel} · 證據分數 ${Math.round(candidate.confidence * 100)}/100${rawScore}`;
     $('reviewConfidence').classList.toggle('low', low);
     $('reviewStatus').textContent = reviewStateLabel(state);
     const cur = latestFoldState && latestFoldState.cur, nm = names();
@@ -3158,9 +3165,24 @@ HTML = r"""<meta charset="utf-8">
       const checks = (r.splitChecks || []).filter(v => v.point != null);
       const se = r.shortEvidence || {};
       const shortInfo = se.penalty > 0
-        ? `<small>短候選：基礎 ${Math.round(r.baseConfidence * 100)}% → ` +
-          `${Math.round(r.confidence * 100)}% · 起／落 ${se.rise}/${se.fall} · ` +
+        ? `<small>短候選舊評分：基礎 ${Math.round(r.baseConfidence * 100)}% → ` +
+          `${Math.round((r.rawConfidence == null ? r.confidence : r.rawConfidence) * 100)}% · 起／落 ${se.rise}/${se.fall} · ` +
           `${(se.penaltyReasons || []).map(v => shortReasons[v] || v).join('、')}</small>`
+        : '';
+      const confidenceNames = {
+        validatedRescue:'dense 短球驗證', validatedSplit:'結構切分驗證',
+        bilateralTargetEvidence:'雙側桌區活動', sustainedSupport:'持續活動',
+        sustainedStrong:'強活動', backgroundSymmetryCaution:'疑似背景對稱活動',
+        structuralWeakness:'結構證據弱'
+      };
+      const confidenceBasis = r.confidenceBasis || {};
+      const confidenceReasons = [...(confidenceBasis.positive || []),
+        ...(confidenceBasis.cautions || [])]
+        .map(value => confidenceNames[value]).filter(Boolean);
+      const rawConfidence = r.rawConfidence == null ? '' :
+        ` · 舊分數 ${Math.round(r.rawConfidence * 100)}%`;
+      const confidenceInfo = confidenceReasons.length || rawConfidence
+        ? `<small>信心依據：${confidenceReasons.join('、') || '舊版相容資料'}${rawConfidence}</small>`
         : '';
       const allValleys = checks.length ? `<details><summary>檢查 ${checks.length} 個 valley</summary>` +
         checks.map(v => `<small>${fmt(v.point)} · ${v.motionValleyScore}/${v.motionValleyDuration}s` +
@@ -3175,11 +3197,11 @@ HTML = r"""<meta charset="utf-8">
         <button type="button" class="rallyseek" data-rally-seek="${i}" aria-label="預覽候選 ${i + 1}，從 ${fmt(r.start)} 開始"><span class="reviewmark">${r.confidenceTier === 'low' ? '⚠' : ''}${mark}</span>#${String(i + 1).padStart(2, '0')}</button>
         <div class="rallyinfo">${fmt(r.start)} → ${fmt(r.end)} · ${r.duration}s
           <small>${reviewStateLabel(reviewState)}</small>
-          ${r.confidenceTier === 'low' ? `<strong class="confidence">低信心 · ${Math.round(r.confidence * 100)}% · 請人工確認</strong>` : ''}
+          ${r.confidenceTier === 'low' ? `<strong class="confidence">低證據 · ${Math.round(r.confidence * 100)}/100 · 請人工確認</strong>` : ''}
           <small>motion ${r.motionMean}/${r.motionPeak} · 左右 ${r.sideBalance} · ` +
           `frames ${r.strongFrames || 0}/${r.supportFrames || 0} · audio ${r.audioHits} · ` +
-          `${r.boundaryBasis || 'motion'} · score ${Math.round(r.confidence * 100)}%</small>` +
-          `<small>${split}</small>${shortInfo}${allValleys}</div>
+          `${r.boundaryBasis || 'motion'} · evidence ${Math.round(r.confidence * 100)}/100</small>` +
+          `${confidenceInfo}<small>${split}</small>${shortInfo}${allValleys}</div>
         <button type="button" class="btn" data-rally-serve="${i}" ${used || reviewState === 'skipped' ? 'disabled' : ''}>${reviewState === 'skipped' ? '已跳過' : used ? '已加入' : '確認發球'}</button>
       </div>`;
     }).join('');
