@@ -1,6 +1,6 @@
-# Koko ttcut
+# KOKO TTCUT V1.5
 
-Turn raw table-tennis footage into a compact, scored match video with assisted rally detection, keyboard-first human review, highlights, and organized local output.
+KOKO TTCUT V1.5 is a local table-tennis video editor with Rally Detection v3, Rally Review Mode, an authoritative scoreboard, multi-file match support, highlight marking and tournament highlights, all processed locally with FFmpeg.
 
 Koko ttcut is an enhanced fork of [MikaDD-TW/ttcut](https://github.com/MikaDD-TW/ttcut). It keeps the original project's practical manual tagging and FFmpeg rendering foundation, then adds a review workspace and a complete multi-match production workflow. The project remains available under the original [MIT License](LICENSE).
 

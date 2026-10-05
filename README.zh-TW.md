@@ -1,6 +1,6 @@
-# Koko ttcut
+# KOKO TTCUT V1.5
 
-從原始桌球比賽影片到可發布成片：以回合候選偵測協助找球、用鍵盤快速人工 Review，加入比分板與精彩球，最後在本機完成輸出。
+KOKO TTCUT V1.5 是在本機執行的桌球影片剪輯程式，整合 Rally Detection v3、Rally Review Mode、權威比分板、多段影片比賽、精彩球標記與賽事精彩集錦，並以 FFmpeg 在電腦本機完成處理與成片。
 
 Koko ttcut 是 [MikaDD-TW/ttcut](https://github.com/MikaDD-TW/ttcut) 的增強 fork。它保留原專案實用的手動標記事件與 FFmpeg 成片基礎，再加入 Review 工作區、多段影片與多場賽事製作流程。專案延續原本的 [MIT 授權](LICENSE)。
 
